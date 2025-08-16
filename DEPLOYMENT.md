@@ -1,512 +1,204 @@
-# Инструкция по развертыванию Site Check на Linux сервере
+# Развертывание Site Check сервиса
 
-## Описание проекта
+## Описание
 
 Site Check - это Go-сервис для анализа и классификации веб-сайтов. Сервис может работать в двух режимах:
-- С использованием OpenAI API для AI-анализа
-- В режиме эвристического анализа (без AI)
+- С использованием OpenAI API для AI-анализа контента
+- В режиме эвристического анализа (без внешних API)
 
-Сервис принимает POST-запросы с URL сайта и возвращает краткое описание тематики сайта.
+## Системные требования
 
-## Требования к серверу
-
-- Linux сервер (Ubuntu 20.04+ или Debian 10+)
+- Linux сервер (Ubuntu 20.04+, Debian 10+, CentOS 7+)
 - Минимум 1GB RAM
 - 10GB свободного места на диске
 - Доступ к интернету
-- Права sudo/root
-- SSH-доступ к GitHub (будет настроен в процессе установки)
+- Права root/sudo
 
-## 1. Подключение к серверу
+## Этапы развертывания
 
-```bash
-ssh root@5.129.234.157
-```
+### 1. Подготовка системы
 
-**⚠️ ВАЖНО:** Репозиторий `gocpa/ads-site-check` является приватным, поэтому необходимо настроить SSH-аутентификацию для доступа к GitHub.
+Обновите систему и установите базовые пакеты:
+- `curl`, `wget`, `git` - для загрузки файлов и работы с репозиториями
+- `nginx` - веб-сервер для проксирования запросов
+- `certbot` - для получения SSL сертификатов
+- `ufw` - файрвол для безопасности
 
-## 2. Обновление системы и установка базовых пакетов
+### 2. Установка Go
 
-```bash
-# Обновляем систему
-apt update && apt upgrade -y
-
-# Устанавливаем необходимые пакеты
-apt install -y curl wget git nginx certbot python3-certbot-nginx ufw
-```
-
-## 3. Установка Go
-
-```bash
-# Скачиваем и устанавливаем Go 1.21+
-cd /tmp
-wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
-tar -xzf go1.21.5.linux-amd64.tar.gz
-mv go /usr/local/
-
-# Настраиваем переменные окружения
-echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
-echo 'export GOPATH=/opt/go' >> /etc/profile
-echo 'export GOBIN=/opt/go/bin' >> /etc/profile
-source /etc/profile
-
-# Проверяем установку
-go version
-```
-
-## 4. Создание пользователя для приложения
-
-```bash
-# Создаем пользователя sitecheck
-useradd -r -s /bin/false -d /opt/sitecheck sitecheck
-
-# Создаем директории
-mkdir -p /opt/sitecheck
-mkdir -p /var/log/sitecheck
-chown sitecheck:sitecheck /opt/sitecheck /var/log/sitecheck
-```
-
-## 5. Настройка SSH-ключа для GitHub
-
-```bash
-# Генерируем SSH-ключ для root пользователя
-ssh-keygen -t ed25519 -C "server@adssitecheck.gocpa.ru" -f /root/.ssh/id_ed25519 -N ""
-
-# Выводим публичный ключ для добавления в GitHub
-echo "Добавьте этот SSH-ключ в GitHub (Settings -> SSH and GPG keys -> New SSH key):"
-cat /root/.ssh/id_ed25519.pub
-
-# Добавляем GitHub в known_hosts
-ssh-keyscan github.com >> /root/.ssh/known_hosts
-
-echo ""
-echo "ВАЖНО: Скопируйте вышеуказанный SSH-ключ и добавьте его в GitHub:"
-echo "1. Перейдите на https://github.com/settings/ssh/new"
-echo "2. Вставьте ключ в поле 'Key'"
-echo "3. Дайте ему название (например: 'Production Server')"
-echo "4. Нажмите 'Add SSH key'"
-echo ""
-read -p "Нажмите Enter после добавления SSH-ключа в GitHub..."
-
-# Тестируем подключение
-ssh -T git@github.com
-```
-
-## 6. Клонирование и сборка проекта
-
-```bash
-# Переходим в рабочую директорию
-cd /opt/sitecheck
-
-# Клонируем репозиторий через SSH
-git clone git@github.com:gocpa/ads-site-check.git .
-
-# Собираем приложение
-go mod tidy
-go build -o sitecheck main.go
-
-# Устанавливаем права
-chown sitecheck:sitecheck sitecheck
-chmod +x sitecheck
-```
-
-## 7. Создание systemd сервиса
-
-Создаем файл сервиса:
-
-```bash
-cat > /etc/systemd/system/sitecheck.service << 'EOF'
-[Unit]
-Description=Site Check Service
-After=network.target
-
-[Service]
-Type=simple
-User=sitecheck
-Group=sitecheck
-WorkingDirectory=/opt/sitecheck
-ExecStart=/opt/sitecheck/sitecheck
-Restart=always
-RestartSec=5
-StandardOutput=append:/var/log/sitecheck/sitecheck.log
-StandardError=append:/var/log/sitecheck/sitecheck.log
-
-# Переменные окружения
-Environment=USE_AI=false
-# Environment=OPENAI_API_KEY=your_openai_api_key_here
-
-# Безопасность
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/var/log/sitecheck
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-## 8. Настройка Nginx
-
-Создаем конфигурацию Nginx:
-
-```bash
-cat > /etc/nginx/sites-available/adssitecheck.gocpa.ru << 'EOF'
-server {
-    listen 80;
-    server_name adssitecheck.gocpa.ru;
-
-    # Логи
-    access_log /var/log/nginx/adssitecheck.gocpa.ru.access.log;
-    error_log /var/log/nginx/adssitecheck.gocpa.ru.error.log;
-
-    # Проксирование на Go-приложение
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        
-        # Таймауты
-        proxy_connect_timeout 30s;
-        proxy_send_timeout 30s;
-        proxy_read_timeout 30s;
-    }
-
-    # Health check endpoint
-    location /healthz {
-        proxy_pass http://127.0.0.1:8080/healthz;
-        access_log off;
-    }
-}
-EOF
-
-# Активируем сайт
-ln -s /etc/nginx/sites-available/adssitecheck.gocpa.ru /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
-
-# Проверяем конфигурацию
-nginx -t
-```
-
-## 9. Настройка DNS
-
-**ВАЖНО:** Перед продолжением убедитесь, что DNS-запись для домена `adssitecheck.gocpa.ru` указывает на IP `5.129.234.157`.
-
-Проверить можно командой:
-```bash
-nslookup adssitecheck.gocpa.ru
-```
-
-## 10. Настройка SSL сертификата
-
-```bash
-# Получаем SSL сертификат от Let's Encrypt
-certbot --nginx -d adssitecheck.gocpa.ru --non-interactive --agree-tos --email admin@gocpa.ru
-
-# Настраиваем автообновление сертификата
-systemctl enable certbot.timer
-systemctl start certbot.timer
-```
-
-## 11. Настройка файрвола
-
-```bash
-# Настраиваем UFW
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow ssh
-ufw allow 'Nginx Full'
-ufw --force enable
-```
-
-## 12. Запуск сервисов
-
-```bash
-# Перезагружаем systemd
-systemctl daemon-reload
-
-# Запускаем и включаем автозапуск сервисов
-systemctl enable sitecheck
-systemctl start sitecheck
-
-systemctl enable nginx
-systemctl restart nginx
-
-# Проверяем статус
-systemctl status sitecheck
-systemctl status nginx
-```
-
-## 13. Проверка работоспособности
-
-```bash
-# Проверяем health check
-curl http://localhost:8080/healthz
-
-# Проверяем через домен
-curl https://adssitecheck.gocpa.ru/healthz
-
-# Тестируем основной функционал
-curl -X POST https://adssitecheck.gocpa.ru/classify \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://google.com"}'
-```
-
-## 14. Мониторинг и логи
-
-```bash
-# Просмотр логов приложения
-tail -f /var/log/sitecheck/sitecheck.log
-
-# Просмотр логов Nginx
-tail -f /var/log/nginx/adssitecheck.gocpa.ru.access.log
-tail -f /var/log/nginx/adssitecheck.gocpa.ru.error.log
-
-# Статус сервиса
-systemctl status sitecheck
-```
-
-## 15. Настройка OpenAI API (опционально)
-
-Если хотите использовать AI-анализ:
-
-### Способ 1: Через systemctl edit (рекомендуется)
-```bash
-# Создаем override файл для сервиса
-systemctl edit sitecheck
-```
-
-В открывшемся редакторе добавьте:
-```ini
-[Service]
-Environment=USE_AI=true
-Environment=OPENAI_API_KEY=your_actual_openai_api_key_here
-```
-
-Сохраните файл (Ctrl+X, затем Y, затем Enter) и перезапустите сервис:
-```bash
-systemctl daemon-reload
-systemctl restart sitecheck
-```
-
-### Способ 2: Прямое редактирование файла сервиса
-```bash
-# Останавливаем сервис
-systemctl stop sitecheck
-
-# Редактируем основной файл сервиса
-nano /etc/systemd/system/sitecheck.service
-
-# Найдите строки:
-# Environment=USE_AI=false
-# # Environment=OPENAI_API_KEY=your_openai_api_key_here
-
-# Измените на:
-# Environment=USE_AI=true
-# Environment=OPENAI_API_KEY=your_actual_openai_api_key_here
-
-# Перезагружаем конфигурацию и запускаем сервис
-systemctl daemon-reload
-systemctl start sitecheck
-```
-
-### Способ 3: Через файл окружения
-```bash
-# Создаем файл с переменными окружения
-cat > /opt/sitecheck/.env << EOF
-USE_AI=true
-OPENAI_API_KEY=your_actual_openai_api_key_here
-EOF
-
-# Обновляем сервис для использования файла окружения
-systemctl edit sitecheck
-```
-
-В редакторе добавьте:
-```ini
-[Service]
-EnvironmentFile=/opt/sitecheck/.env
-```
-
-Затем перезапустите:
-```bash
-systemctl daemon-reload
-systemctl restart sitecheck
-```
-
-## 16. Обновление приложения
-
-```bash
-# Переходим в директорию проекта
-cd /opt/sitecheck
-
-# Останавливаем сервис
-systemctl stop sitecheck
-
-# Обновляем код
-git pull origin master
-
-# Пересобираем
-go build -o sitecheck main.go
-chown sitecheck:sitecheck sitecheck
-
-# Запускаем сервис
-systemctl start sitecheck
-```
-
-## API Документация
-
-### Endpoint: `/classify`
-
-**Метод:** POST  
-**URL:** `https://adssitecheck.gocpa.ru/classify`
-
-**Запрос:**
-```json
-{
-  "url": "https://example.com"
-}
-```
-
-**Ответ:**
-```json
-{
-  "summary": "Краткое описание сайта",
-  "lang": "ru",
-  "source": "ai" // или "heuristic"
-}
-```
-
-### Endpoint: `/healthz`
-
-**Метод:** GET  
-**URL:** `https://adssitecheck.gocpa.ru/healthz`
-
-**Ответ:** `ok` (статус 200)
-
-## Примеры использования
-
-```bash
-# Анализ сайта
-curl -X POST https://adssitecheck.gocpa.ru/classify \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://market.yandex.ru"}'
-
-# Проверка здоровья сервиса
-curl https://adssitecheck.gocpa.ru/healthz
-```
-
-## Устранение неполадок
-
-### Сервис не запускается
-```bash
-# Проверяем логи
-journalctl -u sitecheck -f
-
-# Проверяем права доступа
-ls -la /opt/sitecheck/sitecheck
-
-# Проверяем конфигурацию сервиса
-systemctl cat sitecheck
-```
-
-### Ошибки при настройке переменных окружения
-
-#### "Found modifications outside of the staging area"
-```bash
-# Эта ошибка возникает при пустом override файле
-# Решение 1: Используйте прямое редактирование
-nano /etc/systemd/system/sitecheck.service
-
-# Решение 2: Создайте override файл вручную
-mkdir -p /etc/systemd/system/sitecheck.service.d
-cat > /etc/systemd/system/sitecheck.service.d/override.conf << EOF
-[Service]
-Environment=USE_AI=true
-Environment=OPENAI_API_KEY=your_key_here
-EOF
-
-systemctl daemon-reload
-systemctl restart sitecheck
-```
-
-#### "override.conf: after editing, new contents are empty"
-```bash
-# Убедитесь, что вы сохранили файл с содержимым
-# В nano: Ctrl+X, затем Y, затем Enter
-# В vim: :wq
-
-# Проверьте содержимое override файла
-cat /etc/systemd/system/sitecheck.service.d/override.conf
-
-# Если файл пустой, удалите его и создайте заново
-rm -f /etc/systemd/system/sitecheck.service.d/override.conf
-systemctl edit sitecheck
-```
-
-### Nginx возвращает 502
-```bash
-# Проверяем, что приложение слушает порт 8080
-netstat -tlnp | grep 8080
-# или
-ss -tlnp | grep 8080
-
-# Проверяем логи Nginx
-tail -f /var/log/nginx/error.log
-
-# Проверяем статус сервиса
-systemctl status sitecheck
-```
-
-### SSL сертификат не работает
-```bash
-# Проверяем статус certbot
-systemctl status certbot.timer
-
-# Обновляем сертификат вручную
-certbot renew --dry-run
-
-# Проверяем конфигурацию Nginx после SSL
-nginx -t
-```
-
-### Проблемы с SSH-ключами GitHub
-```bash
-# Тестируем подключение к GitHub
-ssh -T git@github.com
-
-# Проверяем SSH-ключи
-ls -la /root/.ssh/
-
-# Добавляем GitHub в known_hosts если нужно
-ssh-keyscan github.com >> /root/.ssh/known_hosts
-
-# Проверяем права на SSH-ключи
-chmod 600 /root/.ssh/id_ed25519
-chmod 644 /root/.ssh/id_ed25519.pub
-```
+Скачайте и установите Go версии 1.21 или выше:
+- Загрузите дистрибутив Go с официального сайта
+- Распакуйте в `/usr/local/go`
+- Настройте переменные окружения `PATH`, `GOPATH`, `GOBIN`
+
+### 3. Создание пользователя для сервиса
+
+Создайте системного пользователя для безопасного запуска сервиса:
+- Создайте пользователя без возможности входа в систему
+- Создайте рабочую директорию для приложения
+- Создайте директорию для логов
+- Настройте права доступа
+
+### 4. Настройка SSH для GitHub
+
+Если репозиторий приватный, настройте SSH-аутентификацию:
+- Сгенерируйте SSH-ключ ED25519
+- Добавьте публичный ключ в настройки GitHub
+- Добавьте GitHub в `known_hosts`
+- Протестируйте подключение
+
+### 5. Получение исходного кода
+
+Клонируйте репозиторий с исходным кодом:
+- Используйте SSH URL для приватных репозиториев
+- Используйте HTTPS URL для публичных репозиториев
+- Убедитесь в корректности клонирования
+
+### 6. Сборка приложения
+
+Соберите Go-приложение:
+- Выполните `go mod tidy` для загрузки зависимостей
+- Соберите бинарный файл с помощью `go build`
+- Настройте права доступа на исполняемый файл
+- Убедитесь в корректности сборки
+
+### 7. Создание systemd сервиса
+
+Создайте файл сервиса для автоматического управления:
+
+**Основные параметры сервиса:**
+- Тип: `simple`
+- Пользователь: созданный системный пользователь
+- Рабочая директория: директория с приложением
+- Автоперезапуск при сбоях
+- Логирование в файлы
+- Переменные окружения для конфигурации
+
+**Настройки безопасности:**
+- `NoNewPrivileges=yes`
+- `PrivateTmp=yes`
+- `ProtectSystem=strict`
+- `ProtectHome=yes`
+- Ограничение доступа к файловой системе
+
+### 8. Конфигурация веб-сервера
+
+Настройте Nginx как reverse proxy:
+
+**Основные настройки:**
+- Прослушивание 80 порта (HTTP)
+- Проксирование на локальный порт приложения (8080)
+- Настройка заголовков для корректного проксирования
+- Конфигурация таймаутов
+- Настройка логирования
+
+**Специальные endpoint'ы:**
+- Health check endpoint без логирования
+- Основной API endpoint с полным логированием
+
+### 9. Настройка DNS
+
+Настройте DNS записи для вашего домена:
+- A-запись, указывающая на IP сервера
+- Проверьте распространение DNS изменений
+- Убедитесь в корректности разрешения имени
+
+### 10. Получение SSL сертификата
+
+Настройте HTTPS с помощью Let's Encrypt:
+- Используйте certbot для автоматического получения сертификата
+- Настройте автоматическое обновление сертификатов
+- Проверьте корректность SSL конфигурации
+
+### 11. Настройка файрвола
+
+Настройте базовую защиту сервера:
+- Заблокируйте все входящие соединения по умолчанию
+- Разрешите SSH доступ
+- Разрешите HTTP и HTTPS трафик
+- Активируйте файрвол
+
+### 12. Запуск и проверка сервисов
+
+Запустите все необходимые сервисы:
+- Перезагрузите конфигурацию systemd
+- Включите автозапуск сервиса приложения
+- Запустите сервис приложения
+- Перезапустите Nginx с новой конфигурацией
+
+### 13. Проверка работоспособности
+
+Убедитесь в корректной работе всех компонентов:
+- Проверьте статус сервисов
+- Протестируйте health check endpoint
+- Выполните тестовый запрос к API
+- Проверьте логи на наличие ошибок
+
+## Настройка OpenAI API (опционально)
+
+Для включения AI-анализа настройте переменные окружения:
+
+### Способ 1: Override файл systemd
+Создайте override файл для сервиса с переменными:
+- `USE_AI=true`
+- `OPENAI_API_KEY=ваш_ключ_api`
+
+### Способ 2: Файл окружения
+Создайте `.env` файл с переменными и укажите его в конфигурации сервиса.
+
+### Способ 3: Прямое редактирование
+Отредактируйте основной файл сервиса, изменив переменные окружения.
+
+## Обновление приложения
+
+Для обновления сервиса:
+1. Остановите сервис
+2. Обновите исходный код из репозитория
+3. Пересоберите приложение
+4. Запустите сервис
+5. Проверьте работоспособность
+
+## Мониторинг и логи
+
+### Логи приложения
+- Основные логи: в файле в директории логов
+- Системные логи: через journalctl
+
+### Логи веб-сервера
+- Access логи: запросы к API
+- Error логи: ошибки проксирования
+
+### Мониторинг состояния
+- Статус сервисов через systemctl
+- Health check endpoint для автоматического мониторинга
+- Мониторинг использования ресурсов
 
 ## Безопасность
 
-1. Регулярно обновляйте систему: `apt update && apt upgrade`
-2. Мониторьте логи на подозрительную активность
-3. Используйте сильные пароли для SSH
-4. Рассмотрите настройку fail2ban для защиты от брутфорса
-5. Регулярно делайте бэкапы конфигурации
+### Рекомендации по безопасности:
+1. Регулярно обновляйте систему и пакеты
+2. Используйте сильные пароли и SSH-ключи
+3. Мониторьте логи на подозрительную активность
+4. Настройте автоматические обновления безопасности
+5. Ограничьте доступ к серверу только необходимыми портами
+6. Регулярно создавайте резервные копии конфигурации
+
+### Дополнительные меры:
+- Настройка fail2ban для защиты от брутфорса
+- Использование нестандартного SSH порта
+- Настройка системы обнаружения вторжений
+- Регулярный аудит безопасности
 
 ## Производительность
 
-Сервис оптимизирован для обработки запросов с таймаутами:
-- HTTP клиент: 10 секунд
-- Обработка запроса: 12 секунд  
-- AI запрос: 15 секунд
-- Лимит размера HTML: 2MB
-- Лимит текста для AI: 4000 символов
+### Оптимизация производительности:
+- Настройка лимитов ресурсов для сервиса
+- Оптимизация конфигурации Nginx
+- Мониторинг использования памяти и CPU
+- Настройка ротации логов
 
-При высокой нагрузке рассмотрите:
-- Увеличение количества экземпляров сервиса
-- Настройку load balancer
-- Кэширование результатов
+### Масштабирование:
+- Запуск нескольких экземпляров сервиса
+- Настройка load balancer
+- Кэширование результатов API запросов
+- Использование CDN для статических ресурсов
