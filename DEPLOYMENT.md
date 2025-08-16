@@ -273,16 +273,66 @@ systemctl status sitecheck
 
 Если хотите использовать AI-анализ:
 
+### Способ 1: Через systemctl edit (рекомендуется)
 ```bash
-# Редактируем сервис
+# Создаем override файл для сервиса
 systemctl edit sitecheck
+```
 
-# Добавляем в файл:
+В открывшемся редакторе добавьте:
+```ini
 [Service]
 Environment=USE_AI=true
 Environment=OPENAI_API_KEY=your_actual_openai_api_key_here
+```
 
-# Перезапускаем сервис
+Сохраните файл (Ctrl+X, затем Y, затем Enter) и перезапустите сервис:
+```bash
+systemctl daemon-reload
+systemctl restart sitecheck
+```
+
+### Способ 2: Прямое редактирование файла сервиса
+```bash
+# Останавливаем сервис
+systemctl stop sitecheck
+
+# Редактируем основной файл сервиса
+nano /etc/systemd/system/sitecheck.service
+
+# Найдите строки:
+# Environment=USE_AI=false
+# # Environment=OPENAI_API_KEY=your_openai_api_key_here
+
+# Измените на:
+# Environment=USE_AI=true
+# Environment=OPENAI_API_KEY=your_actual_openai_api_key_here
+
+# Перезагружаем конфигурацию и запускаем сервис
+systemctl daemon-reload
+systemctl start sitecheck
+```
+
+### Способ 3: Через файл окружения
+```bash
+# Создаем файл с переменными окружения
+cat > /opt/sitecheck/.env << EOF
+USE_AI=true
+OPENAI_API_KEY=your_actual_openai_api_key_here
+EOF
+
+# Обновляем сервис для использования файла окружения
+systemctl edit sitecheck
+```
+
+В редакторе добавьте:
+```ini
+[Service]
+EnvironmentFile=/opt/sitecheck/.env
+```
+
+Затем перезапустите:
+```bash
 systemctl daemon-reload
 systemctl restart sitecheck
 ```
@@ -358,15 +408,57 @@ journalctl -u sitecheck -f
 
 # Проверяем права доступа
 ls -la /opt/sitecheck/sitecheck
+
+# Проверяем конфигурацию сервиса
+systemctl cat sitecheck
+```
+
+### Ошибки при настройке переменных окружения
+
+#### "Found modifications outside of the staging area"
+```bash
+# Эта ошибка возникает при пустом override файле
+# Решение 1: Используйте прямое редактирование
+nano /etc/systemd/system/sitecheck.service
+
+# Решение 2: Создайте override файл вручную
+mkdir -p /etc/systemd/system/sitecheck.service.d
+cat > /etc/systemd/system/sitecheck.service.d/override.conf << EOF
+[Service]
+Environment=USE_AI=true
+Environment=OPENAI_API_KEY=your_key_here
+EOF
+
+systemctl daemon-reload
+systemctl restart sitecheck
+```
+
+#### "override.conf: after editing, new contents are empty"
+```bash
+# Убедитесь, что вы сохранили файл с содержимым
+# В nano: Ctrl+X, затем Y, затем Enter
+# В vim: :wq
+
+# Проверьте содержимое override файла
+cat /etc/systemd/system/sitecheck.service.d/override.conf
+
+# Если файл пустой, удалите его и создайте заново
+rm -f /etc/systemd/system/sitecheck.service.d/override.conf
+systemctl edit sitecheck
 ```
 
 ### Nginx возвращает 502
 ```bash
 # Проверяем, что приложение слушает порт 8080
 netstat -tlnp | grep 8080
+# или
+ss -tlnp | grep 8080
 
 # Проверяем логи Nginx
 tail -f /var/log/nginx/error.log
+
+# Проверяем статус сервиса
+systemctl status sitecheck
 ```
 
 ### SSL сертификат не работает
@@ -376,6 +468,25 @@ systemctl status certbot.timer
 
 # Обновляем сертификат вручную
 certbot renew --dry-run
+
+# Проверяем конфигурацию Nginx после SSL
+nginx -t
+```
+
+### Проблемы с SSH-ключами GitHub
+```bash
+# Тестируем подключение к GitHub
+ssh -T git@github.com
+
+# Проверяем SSH-ключи
+ls -la /root/.ssh/
+
+# Добавляем GitHub в known_hosts если нужно
+ssh-keyscan github.com >> /root/.ssh/known_hosts
+
+# Проверяем права на SSH-ключи
+chmod 600 /root/.ssh/id_ed25519
+chmod 644 /root/.ssh/id_ed25519.pub
 ```
 
 ## Безопасность
