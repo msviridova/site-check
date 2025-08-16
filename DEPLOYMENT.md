@@ -63,14 +63,40 @@ mkdir -p /var/log/sitecheck
 chown sitecheck:sitecheck /opt/sitecheck /var/log/sitecheck
 ```
 
-## 5. Клонирование и сборка проекта
+## 5. Настройка SSH-ключа для GitHub
+
+```bash
+# Генерируем SSH-ключ для root пользователя
+ssh-keygen -t ed25519 -C "server@adssitecheck.gocpa.ru" -f /root/.ssh/id_ed25519 -N ""
+
+# Выводим публичный ключ для добавления в GitHub
+echo "Добавьте этот SSH-ключ в GitHub (Settings -> SSH and GPG keys -> New SSH key):"
+cat /root/.ssh/id_ed25519.pub
+
+# Добавляем GitHub в known_hosts
+ssh-keyscan github.com >> /root/.ssh/known_hosts
+
+echo ""
+echo "ВАЖНО: Скопируйте вышеуказанный SSH-ключ и добавьте его в GitHub:"
+echo "1. Перейдите на https://github.com/settings/ssh/new"
+echo "2. Вставьте ключ в поле 'Key'"
+echo "3. Дайте ему название (например: 'Production Server')"
+echo "4. Нажмите 'Add SSH key'"
+echo ""
+read -p "Нажмите Enter после добавления SSH-ключа в GitHub..."
+
+# Тестируем подключение
+ssh -T git@github.com
+```
+
+## 6. Клонирование и сборка проекта
 
 ```bash
 # Переходим в рабочую директорию
 cd /opt/sitecheck
 
-# Клонируем репозиторий
-git clone https://github.com/gocpa/ads-site-check.git .
+# Клонируем репозиторий через SSH
+git clone git@github.com:gocpa/ads-site-check.git .
 
 # Собираем приложение
 go mod tidy
@@ -81,7 +107,7 @@ chown sitecheck:sitecheck sitecheck
 chmod +x sitecheck
 ```
 
-## 6. Создание systemd сервиса
+## 7. Создание systemd сервиса
 
 Создаем файл сервиса:
 
@@ -118,7 +144,7 @@ WantedBy=multi-user.target
 EOF
 ```
 
-## 7. Настройка Nginx
+## 8. Настройка Nginx
 
 Создаем конфигурацию Nginx:
 
@@ -162,7 +188,7 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t
 ```
 
-## 8. Настройка DNS
+## 9. Настройка DNS
 
 **ВАЖНО:** Перед продолжением убедитесь, что DNS-запись для домена `adssitecheck.gocpa.ru` указывает на IP `5.129.234.157`.
 
@@ -171,7 +197,7 @@ nginx -t
 nslookup adssitecheck.gocpa.ru
 ```
 
-## 9. Настройка SSL сертификата
+## 10. Настройка SSL сертификата
 
 ```bash
 # Получаем SSL сертификат от Let's Encrypt
@@ -182,7 +208,7 @@ systemctl enable certbot.timer
 systemctl start certbot.timer
 ```
 
-## 10. Настройка файрвола
+## 11. Настройка файрвола
 
 ```bash
 # Настраиваем UFW
@@ -193,7 +219,7 @@ ufw allow 'Nginx Full'
 ufw --force enable
 ```
 
-## 11. Запуск сервисов
+## 12. Запуск сервисов
 
 ```bash
 # Перезагружаем systemd
@@ -211,7 +237,7 @@ systemctl status sitecheck
 systemctl status nginx
 ```
 
-## 12. Проверка работоспособности
+## 13. Проверка работоспособности
 
 ```bash
 # Проверяем health check
@@ -226,7 +252,7 @@ curl -X POST https://adssitecheck.gocpa.ru/classify \
   -d '{"url": "https://google.com"}'
 ```
 
-## 13. Мониторинг и логи
+## 14. Мониторинг и логи
 
 ```bash
 # Просмотр логов приложения
@@ -240,7 +266,7 @@ tail -f /var/log/nginx/adssitecheck.gocpa.ru.error.log
 systemctl status sitecheck
 ```
 
-## 14. Настройка OpenAI API (опционально)
+## 15. Настройка OpenAI API (опционально)
 
 Если хотите использовать AI-анализ:
 
@@ -258,7 +284,7 @@ systemctl daemon-reload
 systemctl restart sitecheck
 ```
 
-## 15. Обновление приложения
+## 16. Обновление приложения
 
 ```bash
 # Переходим в директорию проекта

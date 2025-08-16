@@ -78,14 +78,51 @@ mkdir -p /var/log/sitecheck
 chown sitecheck:sitecheck /opt/sitecheck /var/log/sitecheck
 print_status "Директории созданы"
 
-# 6. Клонирование и сборка
+# 6. Настройка SSH-ключа для GitHub
+echo "🔑 Настраиваем SSH-ключ для GitHub..."
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+
+if [ ! -f "/root/.ssh/id_ed25519" ]; then
+    ssh-keygen -t ed25519 -C "server@adssitecheck.gocpa.ru" -f /root/.ssh/id_ed25519 -N ""
+    print_status "SSH-ключ сгенерирован"
+else
+    print_status "SSH-ключ уже существует"
+fi
+
+# Добавляем GitHub в known_hosts
+ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
+
+echo ""
+echo "🔑 ВАЖНО: Добавьте этот SSH-ключ в GitHub:"
+echo "=========================================="
+cat /root/.ssh/id_ed25519.pub
+echo "=========================================="
+echo ""
+echo "Инструкция:"
+echo "1. Перейдите на https://github.com/settings/ssh/new"
+echo "2. Скопируйте и вставьте ключ выше в поле 'Key'"
+echo "3. Дайте ему название (например: 'Production Server')"
+echo "4. Нажмите 'Add SSH key'"
+echo ""
+read -p "Нажмите Enter после добавления SSH-ключа в GitHub..."
+
+# Тестируем подключение
+if ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+    print_status "SSH подключение к GitHub работает"
+else
+    print_warning "Не удалось подтвердить SSH подключение к GitHub"
+    echo "Продолжаем установку..."
+fi
+
+# 7. Клонирование и сборка
 echo "📥 Клонируем репозиторий..."
 cd /opt/sitecheck
 if [ -d ".git" ]; then
     git pull origin master
     print_status "Репозиторий обновлен"
 else
-    git clone https://github.com/gocpa/ads-site-check.git .
+    git clone git@github.com:gocpa/ads-site-check.git .
     print_status "Репозиторий склонирован"
 fi
 
@@ -96,7 +133,7 @@ chown sitecheck:sitecheck sitecheck
 chmod +x sitecheck
 print_status "Приложение собрано"
 
-# 7. Создание systemd сервиса
+# 8. Создание systemd сервиса
 echo "⚙️  Создаем systemd сервис..."
 cat > /etc/systemd/system/sitecheck.service << 'EOF'
 [Unit]
@@ -130,7 +167,7 @@ WantedBy=multi-user.target
 EOF
 print_status "Systemd сервис создан"
 
-# 8. Настройка Nginx
+# 9. Настройка Nginx
 echo "🌐 Настраиваем Nginx..."
 cat > /etc/nginx/sites-available/adssitecheck.gocpa.ru << 'EOF'
 server {
@@ -173,7 +210,7 @@ else
     exit 1
 fi
 
-# 9. Настройка файрвола
+# 10. Настройка файрвола
 echo "🔒 Настраиваем файрвол..."
 ufw --force reset
 ufw default deny incoming
@@ -183,7 +220,7 @@ ufw allow 'Nginx Full'
 ufw --force enable
 print_status "Файрвол настроен"
 
-# 10. Запуск сервисов
+# 11. Запуск сервисов
 echo "🚀 Запускаем сервисы..."
 systemctl daemon-reload
 systemctl enable sitecheck
@@ -192,7 +229,7 @@ systemctl enable nginx
 systemctl restart nginx
 print_status "Сервисы запущены"
 
-# 11. Проверка работоспособности
+# 12. Проверка работоспособности
 echo "🔍 Проверяем работоспособность..."
 sleep 3
 
