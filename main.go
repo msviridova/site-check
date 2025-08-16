@@ -23,9 +23,11 @@ type classifyRequest struct {
 }
 
 type classifyResponse struct {
-	Summary string `json:"summary"`
-	Lang    string `json:"lang"`
-	Source  string `json:"source"`
+	Summary          string   `json:"summary"`
+	Lang             string   `json:"lang"`
+	Source           string   `json:"source"` // "ai" / "heuristic" / "ai_quota" / "ai_error"
+	Keywords         []string `json:"keywords,omitempty"`
+	NegativeKeywords []string `json:"negative_keywords,omitempty"`
 }
 
 // ==== HTTP-обработчик ====
@@ -50,14 +52,12 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "url is required", http.StatusBadRequest)
 		return
 	}
-
 	u, err := url.ParseRequestURI(raw)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		http.Error(w, "invalid url", http.StatusBadRequest)
 		return
 	}
 
-	// лог — ТОЛЬКО после успешного парсинга u
 	log.Printf("useAI=%v url=%s", useAI, u.String())
 
 	// 4) общий таймаут на работу хэндлера
@@ -75,40 +75,73 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 	text := extractVisibleText(html)
 	log.Printf("extracted text length: %d", len(text))
 
-	// если текста мало — сразу фолбэк по title/meta/host
+	// === НОВОЕ: если текста мало — пробуем ИИ по домену (и title/meta), иначе фолбэк ===
 	if len(strings.TrimSpace(text)) < 40 {
-		summary := fallbackSummary(u, html)
-		if strings.TrimSpace(summary) == "" {
-			summary = "Не удалось определить тематику сайта"
+		brief := fallbackSummary(u, html) // title/meta/host
+		if useAI {
+			// соберём небольшой вход для модели
+			shortInput := "Домен: " + u.Hostname()
+			if b := strings.TrimSpace(brief); b != "" {
+				shortInput += "\nTitle/Meta: " + b
+			}
+
+			sum, kws, negs, aiErr := summarizeWithAI(ctx, shortInput)
+			log.Printf("AI (short-text) finished, err=%v", aiErr)
+			if aiErr == nil && strings.TrimSpace(sum) != "" {
+				resp := classifyResponse{
+					Summary:          sum,
+					Lang:             "ru",
+					Source:           "ai",
+					Keywords:         kws,
+					NegativeKeywords: negs,
+				}
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+			log.Println("AI short-text failed → fallback to heuristic")
 		}
-		resp := classifyResponse{Summary: summary, Lang: "ru", Source: "heuristic"}
+
+		// эвристический фолбэк
+		summary := brief
+		if strings.TrimSpace(summary) == "" {
+			summary = "Веб-сайт компании/сервиса " + u.Hostname()
+		}
+		resp := classifyResponse{
+			Summary: summary,
+			Lang:    "ru",
+			Source:  "heuristic",
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(resp)
 		return
 	}
 
+	// === Текста достаточно: обычная логика ===
 	var (
 		summary string
 		source  string
+		kws     []string
+		negs    []string
 	)
 
 	if useAI {
-		// 7a) пробуем AI
 		source = "ai"
-		summary, aiErr := summarizeWithAI(ctx, text)
+		sum, kk, nn, aiErr := summarizeWithAI(ctx, text)
 		log.Printf("AI call finished, err=%v", aiErr)
-		if aiErr != nil || strings.TrimSpace(summary) == "" {
+		if aiErr != nil || strings.TrimSpace(sum) == "" {
 			log.Println("AI failed or empty → fallback to heuristic")
 			summary = heuristicSummarize(text)
 			source = "heuristic"
+		} else {
+			summary, kws, negs = sum, kk, nn
 		}
 	} else {
-		// 7b) сразу эвристика
 		summary = heuristicSummarize(text)
 		source = "heuristic"
 	}
 
-	// стоп‑фолбэк: не отдаём пустую строку
+	// стоп-фолбэк: не отдаём пустую строку
 	if strings.TrimSpace(summary) == "" {
 		log.Println("summary is empty → using title/meta/host fallback")
 		summary = fallbackSummary(u, html)
@@ -119,9 +152,11 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 8) отвечаем JSON
 	resp := classifyResponse{
-		Summary: summary,
-		Lang:    "ru",
-		Source:  source,
+		Summary:          summary,
+		Lang:             "ru",
+		Source:           source,
+		Keywords:         kws,
+		NegativeKeywords: negs,
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -136,6 +171,15 @@ var httpClient = &http.Client{
 var aiClient = openai.NewClient()
 
 var useAI = strings.ToLower(os.Getenv("USE_AI")) == "true"
+
+var modelName = "gpt-3.5-turbo" // как и было
+
+func maskKey(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:4] + "…" + s[len(s)-4:]
+}
 
 // ==== загрузка HTML ====
 
@@ -332,7 +376,7 @@ func splitSentences(s string) []string {
 	return out
 }
 
-func summarizeWithAI(ctx context.Context, text string) (string, error) {
+func summarizeWithAI(ctx context.Context, text string) (string, []string, []string, error) {
 	// поджимаем вход: модели не нужен весь роман
 	if len(text) > 4000 {
 		text = text[:4000]
@@ -343,42 +387,61 @@ func summarizeWithAI(ctx context.Context, text string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	// просим очень короткое деловое описание на русском
-	// формулируем подсказку так, чтобы боты других языков тоже поняли
-	prompt := `
+	// Просим СТРОГО JSON (чтобы удобно парсить в поля ответа)
+	prompt := `Ты — сервис классификации сайтов.
 
-Ты — сервис классификации сайтов.
-В одной короткой фразе по-русски скажи, чем занимается сайт (сфера/услуга/товар и, если явно есть, город/бренд).
-Не добавляй лишних слов, без пояснений, без ссылок.
-Текст страницы ниже:
+1) Кратко, одной деловой фразой по-русски опиши тематику сайта (сфера/услуга/товар и, если явно есть, город/бренд).
+   Не добавляй лишних слов, без пояснений, без ссылок.
+
+2) Сгенерируй список ключевых слов и фраз для запуска рекламы в Яндекс.Директ (30–40 штук, только по этому контенту).
+
+3) Сформируй список минус-слов (30–50), чтобы отсеять нерелевантные запросы.
+
+Верни СТРОГО валидный JSON ровно такой структуры (без пояснений снаружи):
+{
+  "summary": "краткое описание одной фразой",
+  "keywords": ["...", "..."],
+  "negative_keywords": ["...", "..."]
+}
+
+Контент сайта:
 ` + text
 
-	// минимальный вызов Chat Completions через официальный SDK
-	// модель: GPT‑4o — быстрый и сильный универсал для текста
-	// при желании можно заменить на более бюджетную (например, 4o‑mini)
 	resp, err := aiClient.Chat.Completions.New(cctx, openai.ChatCompletionNewParams{
-		Model: "gpt-3.5-turbo",
+		Model: "gpt-3.5-turbo", // как было раньше
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(prompt),
 		},
-		// можно зажать длину ответа:
-		MaxTokens: openai.Int(60),
-		// чтобы стабильнее: сид, температура
+		// ответ длиннее — увеличим лимит
+		MaxTokens:   openai.Int(800),
 		Temperature: openai.Float(0.2),
 		Seed:        openai.Int(42),
 	})
 	if err != nil {
-		return "", err
+		return "", nil, nil, err
 	}
 	if len(resp.Choices) == 0 {
-		return "", errors.New("no choices from AI")
+		return "", nil, nil, errors.New("no choices from AI")
 	}
-	out := strings.TrimSpace(resp.Choices[0].Message.Content)
-	// подстрахуемся на пустоту
-	if out == "" {
-		return "", errors.New("empty AI response")
+
+	raw := strings.TrimSpace(resp.Choices[0].Message.Content)
+	if raw == "" {
+		return "", nil, nil, errors.New("empty AI response")
 	}
-	return out, nil
+
+	// временная структура для парсинга JSON
+	var tmp struct {
+		Summary          string   `json:"summary"`
+		Keywords         []string `json:"keywords"`
+		NegativeKeywords []string `json:"negative_keywords"`
+	}
+	if jerr := json.Unmarshal([]byte(raw), &tmp); jerr != nil {
+		// если пришёл невалидный JSON — вернём хотя бы summary как текст,
+		// списки оставим пустыми (эвристика всё равно подстрахует)
+		return raw, nil, nil, nil
+	}
+
+	return strings.TrimSpace(tmp.Summary), tmp.Keywords, tmp.NegativeKeywords, nil
 }
 
 func fallbackSummary(u *url.URL, html string) string {
@@ -412,6 +475,8 @@ func main() {
 	} else {
 		log.Printf("INFO: OPENAI_API_KEY detected (len=%d)\n", len(os.Getenv("OPENAI_API_KEY")))
 	}
+	log.Printf("BOOT: USE_AI=%v MODEL=%s KEY_SET=%t KEY=%s",
+		useAI, modelName, os.Getenv("OPENAI_API_KEY") != "", maskKey(os.Getenv("OPENAI_API_KEY")))
 	mux := http.NewServeMux()
 	mux.HandleFunc("/classify", classifyHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
