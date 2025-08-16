@@ -1,0 +1,33 @@
+# Скомпилированные двоичные файлы
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Временные файлы сборки
+*.test
+*.out
+
+# Папки, создаваемые go build / go install
+bin/
+build/
+
+# Кэш модулей
+pkg/
+*.modcache
+
+# Логи
+*.log
+
+# Файлы IDE/редакторов
+.vscode/
+.idea/
+*.swp
+
+# OS-специфические файлы
+.DS_Store
+Thumbs.db
+
+# Вендоринг (если не используешь vendor)
+vendor/
