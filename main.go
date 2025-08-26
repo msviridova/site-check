@@ -54,11 +54,12 @@ func main() {
 	// Маршруты
 	mux := http.NewServeMux()
 	mux.HandleFunc("/classify", classifyHandler)
+	mux.HandleFunc("/creative", creativeHandler)
+	mux.HandleFunc("/image", imageHandler) // <— вот это обязательно
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,

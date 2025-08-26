@@ -1,11 +1,13 @@
 module github.com/sanmarri/site-check
 
-go 1.24.5
+go 1.23
+
+toolchain go1.24.5
 
 require (
-	github.com/PuerkitoBio/goquery v1.10.3
+	github.com/PuerkitoBio/goquery v1.10.2
 	github.com/go-sql-driver/mysql v1.9.3
-	github.com/openai/openai-go/v2 v2.1.0
+	github.com/openai/openai-go/v2 v2.0.0
 )
 
 require (
@@ -15,5 +17,5 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	golang.org/x/net v0.39.0 // indirect
+	golang.org/x/net v0.35.0 // indirect
 )
