@@ -11,7 +11,7 @@ import (
 	"github.com/openai/openai-go/v2"
 )
 
-var aiClient *openai.Client
+var aiClient openai.Client
 
 // Цвета от ИИ (что парсим из JSON)
 type AIColors struct {
