@@ -255,8 +255,8 @@ cd /opt/sitecheck
 # Загрузка зависимостей
 sudo -u sitecheck go mod tidy
 
-# Сборка приложения
-sudo -u sitecheck go build -o sitecheck main.go
+# Сборка приложения (собираем весь проект, не только main.go)
+sudo -u sitecheck go build -o sitecheck .
 
 # Настройка прав доступа
 sudo chown sitecheck:sitecheck /opt/sitecheck/sitecheck
@@ -643,8 +643,8 @@ sudo -u sitecheck git log --oneline -5
 # Обновление зависимостей
 sudo -u sitecheck go mod tidy
 
-# Пересборка приложения
-sudo -u sitecheck go build -o sitecheck main.go
+# Пересборка приложения (собираем весь проект)
+sudo -u sitecheck go build -o sitecheck .
 
 # Настройка прав доступа
 sudo chown sitecheck:sitecheck /opt/sitecheck/sitecheck
