@@ -20,43 +20,93 @@ Site Check - это Go-сервис для анализа и классифик�
 ### 1. Подготовка системы
 
 Обновите систему и установите базовые пакеты:
-- `curl`, `wget`, `git` - для загрузки файлов и работы с репозиториями
-- `nginx` - веб-сервер для проксирования запросов
-- `certbot` - для получения SSL сертификатов
-- `ufw` - файрвол для безопасности
-- `mysql-server` или `mariadb-server` - база данных для логирования
+
+```bash
+# Обновление системы
+sudo apt update && sudo apt upgrade -y
+
+# Установка базовых пакетов
+sudo apt install -y curl wget git nginx certbot python3-certbot-nginx ufw
+
+# Установка MySQL (выберите один вариант)
+sudo apt install -y mysql-server
+# ИЛИ для MariaDB:
+# sudo apt install -y mariadb-server
+
+# Запуск и включение автозапуска MySQL
+sudo systemctl start mysql
+sudo systemctl enable mysql
+
+# Базовая настройка безопасности MySQL
+sudo mysql_secure_installation
+```
 
 ### 2. Установка Go
 
 Скачайте и установите Go версии 1.21 или выше:
-- Загрузите дистрибутив Go с официального сайта
-- Распакуйте в `/usr/local/go`
-- Настройте переменные окружения `PATH`, `GOPATH`, `GOBIN`
+
+```bash
+# Переход в временную директорию
+cd /tmp
+
+# Скачивание Go (проверьте актуальную версию на https://golang.org/dl/)
+wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
+
+# Удаление старой версии Go (если есть)
+sudo rm -rf /usr/local/go
+
+# Распаковка Go
+sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
+
+# Настройка переменных окружения
+echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee -a /etc/profile
+echo 'export GOPATH=/opt/go' | sudo tee -a /etc/profile
+echo 'export GOBIN=/opt/go/bin' | sudo tee -a /etc/profile
+
+# Применение переменных окружения
+source /etc/profile
+
+# Проверка установки
+go version
+```
 
 ### 3. Настройка базы данных
 
 Настройте MySQL/MariaDB для работы приложения:
 
-#### Установка и базовая настройка
-- Установите MySQL Server или MariaDB
-- Запустите службу базы данных
-- Выполните начальную настройку безопасности
-- Создайте базу данных и пользователя для приложения
-
 #### Создание базы данных и пользователя
-Подключитесь к MySQL и выполните следующие команды:
+
+```bash
+# Подключение к MySQL как root
+sudo mysql -u root -p
+
+# В консоли MySQL выполните следующие команды:
+```
 
 ```sql
 CREATE DATABASE sitecheck CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'sitecheck'@'localhost' IDENTIFIED BY 'your_secure_password';
-GRANT ALL PRIVILEGES ON sitecheck.* TO 'sitecheck'@'localhost';
+CREATE USER 'sitecheck_user'@'localhost' IDENTIFIED BY 'SecurePassword123!';
+GRANT ALL PRIVILEGES ON sitecheck.* TO 'sitecheck_user'@'localhost';
 FLUSH PRIVILEGES;
+EXIT;
+```
+
+```bash
+# Проверка подключения с новым пользователем
+mysql -u sitecheck_user -p sitecheck
+# Введите пароль: SecurePassword123!
 ```
 
 #### Создание таблиц
-Создайте необходимые таблицы для логирования API запросов:
+
+```bash
+# Подключение к базе данных sitecheck
+mysql -u sitecheck_user -p sitecheck
+# Введите пароль: SecurePassword123!
+```
 
 ```sql
+-- В консоли MySQL выполните создание таблиц:
 USE sitecheck;
 
 -- Таблица для логов API запросов
@@ -93,152 +143,527 @@ CREATE TABLE IF NOT EXISTS ai_logs (
 ```
 
 #### Настройка производительности
-Рекомендуемые настройки MySQL для оптимальной работы:
 
-```ini
-# В файле /etc/mysql/mysql.conf.d/mysqld.cnf или /etc/my.cnf
+```bash
+# Создание резервной копии конфигурации
+sudo cp /etc/mysql/mysql.conf.d/mysqld.cnf /etc/mysql/mysql.conf.d/mysqld.cnf.backup
+
+# Добавление настроек производительности
+sudo tee -a /etc/mysql/mysql.conf.d/mysqld.cnf << 'EOF'
+
+# Настройки производительности для Site Check
 [mysqld]
 innodb_buffer_pool_size = 1G
 innodb_log_file_size = 256M
 max_connections = 200
 query_cache_size = 64M
 query_cache_type = 1
+slow_query_log = 1
+slow_query_log_file = /var/log/mysql/slow.log
+long_query_time = 2
+EOF
+
+# Перезапуск MySQL для применения настроек
+sudo systemctl restart mysql
+
+# Проверка статуса
+sudo systemctl status mysql
 ```
 
 ### 4. Создание пользователя для сервиса
 
-Создайте системного пользователя для безопасного запуска сервиса:
-- Создайте пользователя без возможности входа в систему
-- Создайте рабочую директорию для приложения
-- Создайте директорию для логов
-- Настройте права доступа
+```bash
+# Создание системного пользователя sitecheck
+sudo useradd -r -s /bin/false -d /opt/sitecheck sitecheck
+
+# Создание рабочих директорий
+sudo mkdir -p /opt/sitecheck
+sudo mkdir -p /var/log/sitecheck
+
+# Настройка прав доступа
+sudo chown sitecheck:sitecheck /opt/sitecheck
+sudo chown sitecheck:sitecheck /var/log/sitecheck
+sudo chmod 755 /opt/sitecheck
+sudo chmod 755 /var/log/sitecheck
+
+# Проверка созданного пользователя
+id sitecheck
+ls -la /opt/ | grep sitecheck
+ls -la /var/log/ | grep sitecheck
+```
 
 ### 5. Настройка SSH для GitHub
 
 Если репозиторий приватный, настройте SSH-аутентификацию:
-- Сгенерируйте SSH-ключ ED25519
-- Добавьте публичный ключ в настройки GitHub
-- Добавьте GitHub в `known_hosts`
-- Протестируйте подключение
+
+```bash
+# Создание SSH директории (если не существует)
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+
+# Генерация SSH-ключа ED25519
+ssh-keygen -t ed25519 -C "server@domain.com" -f ~/.ssh/id_ed25519 -N ""
+
+# Вывод публичного ключа для добавления в GitHub
+echo "Добавьте этот SSH-ключ в GitHub (Settings -> SSH and GPG keys):"
+cat ~/.ssh/id_ed25519.pub
+
+# Добавление GitHub в known_hosts
+ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+# Настройка прав доступа
+chmod 600 ~/.ssh/id_ed25519
+chmod 644 ~/.ssh/id_ed25519.pub
+
+echo "1. Скопируйте ключ выше"
+echo "2. Перейдите на https://github.com/settings/ssh/new"
+echo "3. Вставьте ключ и сохраните"
+echo "4. Нажмите Enter для продолжения..."
+read
+
+# Тестирование подключения к GitHub
+ssh -T git@github.com
+```
 
 ### 6. Получение исходного кода
 
-Клонируйте репозиторий с исходным кодом:
-- Используйте SSH URL для приватных репозиториев
-- Используйте HTTPS URL для публичных репозиториев
-- Убедитесь в корректности клонирования
+```bash
+# Переход в рабочую директорию
+cd /opt/sitecheck
+
+# Клонирование репозитория (для приватного репозитория через SSH)
+sudo -u sitecheck git clone git@github.com:username/site-check.git .
+
+# ИЛИ для публичного репозитория через HTTPS:
+# sudo -u sitecheck git clone https://github.com/username/site-check.git .
+
+# Проверка клонирования
+ls -la /opt/sitecheck
+sudo -u sitecheck git status
+
+# Проверка файлов проекта
+ls -la /opt/sitecheck/
+cat /opt/sitecheck/go.mod
+```
 
 ### 7. Сборка приложения
 
-Соберите Go-приложение:
-- Выполните `go mod tidy` для загрузки зависимостей
-- Соберите бинарный файл с помощью `go build`
-- Настройте права доступа на исполняемый файл
-- Убедитесь в корректности сборки
+```bash
+# Переход в директорию проекта
+cd /opt/sitecheck
+
+# Загрузка зависимостей
+sudo -u sitecheck go mod tidy
+
+# Сборка приложения
+sudo -u sitecheck go build -o sitecheck main.go
+
+# Настройка прав доступа
+sudo chown sitecheck:sitecheck /opt/sitecheck/sitecheck
+sudo chmod +x /opt/sitecheck/sitecheck
+
+# Проверка сборки
+ls -la /opt/sitecheck/sitecheck
+file /opt/sitecheck/sitecheck
+
+# Тестовый запуск (должен показать ошибку о DATABASE_URL - это нормально)
+sudo -u sitecheck /opt/sitecheck/sitecheck || echo "Ошибка DATABASE_URL - ожидаемо"
+```
 
 ### 8. Создание systemd сервиса
 
-Создайте файл сервиса для автоматического управления:
+```bash
+# Создание файла сервиса
+sudo tee /etc/systemd/system/sitecheck.service << 'EOF'
+[Unit]
+Description=Site Check Service
+After=network.target mysql.service
 
-**Основные параметры сервиса:**
-- Тип: `simple`
-- Пользователь: созданный системный пользователь
-- Рабочая директория: директория с приложением
-- Автоперезапуск при сбоях
-- Логирование в файлы
-- Переменные окружения для конфигурации
+[Service]
+Type=simple
+User=sitecheck
+Group=sitecheck
+WorkingDirectory=/opt/sitecheck
+ExecStart=/opt/sitecheck/sitecheck
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/sitecheck/sitecheck.log
+StandardError=append:/var/log/sitecheck/sitecheck.log
 
-**Обязательные переменные окружения:**
-- `DATABASE_URL` - строка подключения к MySQL в формате: `username:password@tcp(localhost:3306)/database_name`
-- `USE_AI` - включение/отключение AI функций (`true`/`false`)
-- `OPENAI_API_KEY` - API ключ OpenAI (при использовании AI)
+# Переменные окружения
+Environment=DATABASE_URL=sitecheck_user:SecurePassword123!@tcp(localhost:3306)/sitecheck
+Environment=USE_AI=false
+# Environment=OPENAI_API_KEY=sk-your-openai-api-key-here
 
-**Настройки безопасности:**
-- `NoNewPrivileges=yes`
-- `PrivateTmp=yes`
-- `ProtectSystem=strict`
-- `ProtectHome=yes`
-- Ограничение доступа к файловой системе
+# Настройки безопасности
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/sitecheck
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Перезагрузка конфигурации systemd
+sudo systemctl daemon-reload
+
+# Включение автозапуска сервиса
+sudo systemctl enable sitecheck
+
+# Проверка конфигурации сервиса
+sudo systemctl cat sitecheck
+```
 
 ### 9. Конфигурация веб-сервера
 
-Настройте Nginx как reverse proxy:
+```bash
+# Удаление конфигурации по умолчанию
+sudo rm -f /etc/nginx/sites-enabled/default
 
-**Основные настройки:**
-- Прослушивание 80 порта (HTTP)
-- Проксирование на локальный порт приложения (8080)
-- Настройка заголовков для корректного проксирования
-- Конфигурация таймаутов
-- Настройка логирования
+# Создание конфигурации для Site Check
+sudo tee /etc/nginx/sites-available/sitecheck.domain.com << 'EOF'
+server {
+    listen 80;
+    server_name sitecheck.domain.com;
 
-**Специальные endpoint'ы:**
-- Health check endpoint без логирования
-- Основной API endpoint с полным логированием
+    # Логи
+    access_log /var/log/nginx/sitecheck.domain.com.access.log;
+    error_log /var/log/nginx/sitecheck.domain.com.error.log;
+
+    # Проксирование на Go-приложение
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Таймауты
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+
+    # Health check endpoint
+    location /healthz {
+        proxy_pass http://127.0.0.1:8080/healthz;
+        access_log off;
+    }
+}
+EOF
+
+# Активация сайта
+sudo ln -s /etc/nginx/sites-available/sitecheck.domain.com /etc/nginx/sites-enabled/
+
+# Проверка конфигурации Nginx
+sudo nginx -t
+
+# Перезапуск Nginx
+sudo systemctl restart nginx
+sudo systemctl status nginx
+```
 
 ### 10. Настройка DNS
 
-Настройте DNS записи для вашего домена:
-- A-запись, указывающая на IP сервера
-- Проверьте распространение DNS изменений
-- Убедитесь в корректности разрешения имени
+```bash
+# Проверка текущего IP сервера
+curl -4 ifconfig.me
+echo ""
+
+# Проверка DNS записи (выполните на локальной машине или другом сервере)
+# nslookup sitecheck.domain.com
+# dig sitecheck.domain.com
+
+echo "Настройте DNS запись:"
+echo "Тип: A"
+echo "Имя: sitecheck.domain.com"
+echo "Значение: $(curl -4 -s ifconfig.me)"
+echo "TTL: 300"
+echo ""
+echo "После настройки DNS проверьте распространение:"
+
+# Ожидание распространения DNS
+while true; do
+    if nslookup sitecheck.domain.com | grep -q "$(curl -4 -s ifconfig.me)"; then
+        echo "DNS запись распространилась успешно!"
+        break
+    else
+        echo "Ожидание распространения DNS... (проверка каждые 30 сек)"
+        sleep 30
+    fi
+done
+```
 
 ### 11. Получение SSL сертификата
 
-Настройте HTTPS с помощью Let's Encrypt:
-- Используйте certbot для автоматического получения сертификата
-- Настройте автоматическое обновление сертификатов
-- Проверьте корректность SSL конфигурации
+```bash
+# Получение SSL сертификата от Let's Encrypt
+sudo certbot --nginx -d sitecheck.domain.com \
+  --non-interactive \
+  --agree-tos \
+  --email admin@domain.com
+
+# Проверка статуса сертификата
+sudo certbot certificates
+
+# Настройка автоматического обновления
+sudo systemctl enable certbot.timer
+sudo systemctl start certbot.timer
+sudo systemctl status certbot.timer
+
+# Тестирование автообновления
+sudo certbot renew --dry-run
+
+# Проверка конфигурации Nginx после SSL
+sudo nginx -t
+sudo systemctl reload nginx
+
+# Проверка SSL сертификата
+curl -I https://sitecheck.domain.com/healthz
+```
 
 ### 12. Настройка файрвола
 
-Настройте базовую защиту сервера:
-- Заблокируйте все входящие соединения по умолчанию
-- Разрешите SSH доступ
-- Разрешите HTTP и HTTPS трафик
-- Активируйте файрвол
+```bash
+# Сброс настроек UFW (осторожно!)
+sudo ufw --force reset
+
+# Настройка политик по умолчанию
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# Разрешение SSH (ВАЖНО: сделайте это до активации UFW!)
+sudo ufw allow ssh
+sudo ufw allow 22/tcp
+
+# Разрешение HTTP и HTTPS
+sudo ufw allow 'Nginx Full'
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+
+# Опционально: разрешение только для определенных IP
+# sudo ufw allow from 192.168.1.0/24 to any port 22
+
+# Активация файрвола
+sudo ufw --force enable
+
+# Проверка статуса
+sudo ufw status verbose
+sudo ufw status numbered
+
+# Проверка логов файрвола
+sudo tail -f /var/log/ufw.log
+```
 
 ### 13. Запуск и проверка сервисов
 
-Запустите все необходимые сервисы:
-- Перезагрузите конфигурацию systemd
-- Включите автозапуск сервиса приложения
-- Запустите сервис приложения
-- Перезапустите Nginx с новой конфигурацией
+```bash
+# Перезагрузка конфигурации systemd
+sudo systemctl daemon-reload
+
+# Запуск MySQL (если не запущен)
+sudo systemctl start mysql
+sudo systemctl enable mysql
+
+# Запуск сервиса Site Check
+sudo systemctl start sitecheck
+sudo systemctl enable sitecheck
+
+# Запуск Nginx
+sudo systemctl start nginx
+sudo systemctl enable nginx
+
+# Проверка статуса всех сервисов
+echo "=== Статус MySQL ==="
+sudo systemctl status mysql --no-pager
+
+echo "=== Статус Site Check ==="
+sudo systemctl status sitecheck --no-pager
+
+echo "=== Статус Nginx ==="
+sudo systemctl status nginx --no-pager
+
+# Проверка портов
+echo "=== Открытые порты ==="
+sudo netstat -tlnp | grep -E ':80|:443|:3306|:8080'
+
+# Проверка логов
+echo "=== Последние логи Site Check ==="
+sudo journalctl -u sitecheck --no-pager -n 10
+```
 
 ### 14. Проверка работоспособности
 
-Убедитесь в корректной работе всех компонентов:
-- Проверьте статус сервисов (MySQL, приложение, Nginx)
-- Протестируйте подключение к базе данных
-- Протестируйте health check endpoint
-- Выполните тестовый запрос к API
-- Проверьте логи на наличие ошибок
-- Убедитесь, что записи создаются в таблицах `api_logs` и `ai_logs`
+```bash
+# Проверка подключения к базе данных
+mysql -u sitecheck_user -p sitecheck -e "SELECT COUNT(*) as api_logs_count FROM api_logs; SELECT COUNT(*) as ai_logs_count FROM ai_logs;"
+# Введите пароль: SecurePassword123!
+
+# Health check через локальный порт
+curl -v http://localhost:8080/healthz
+
+# Health check через домен (HTTP)
+curl -v http://sitecheck.domain.com/healthz
+
+# Health check через домен (HTTPS)
+curl -v https://sitecheck.domain.com/healthz
+
+# Тестовый запрос к API
+curl -X POST https://sitecheck.domain.com/classify \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://google.com"}' \
+  -v
+
+# Проверка записей в базе данных после API запроса
+mysql -u sitecheck_user -p sitecheck -e "
+SELECT id, route, url, status_code, created_at 
+FROM api_logs 
+ORDER BY created_at DESC 
+LIMIT 5;
+"
+
+# Проверка логов приложения
+echo "=== Логи приложения ==="
+sudo tail -n 20 /var/log/sitecheck/sitecheck.log
+
+# Проверка логов Nginx
+echo "=== Access логи Nginx ==="
+sudo tail -n 10 /var/log/nginx/sitecheck.domain.com.access.log
+
+echo "=== Error логи Nginx ==="
+sudo tail -n 10 /var/log/nginx/sitecheck.domain.com.error.log
+
+# Проверка использования ресурсов
+echo "=== Использование ресурсов ==="
+free -h
+df -h
+ps aux | grep -E 'sitecheck|mysql|nginx' | grep -v grep
+```
 
 ## Настройка OpenAI API (опционально)
 
 Для включения AI-анализа настройте переменные окружения:
 
 ### Способ 1: Override файл systemd
-Создайте override файл для сервиса с переменными:
-- `DATABASE_URL=sitecheck:password@tcp(localhost:3306)/sitecheck`
-- `USE_AI=true`
-- `OPENAI_API_KEY=ваш_ключ_api`
 
-### Способ 2: Файл окружения
-Создайте `.env` файл с переменными и укажите его в конфигурации сервиса.
+```bash
+# Создание override файла для сервиса
+sudo systemctl edit sitecheck
 
-### Способ 3: Прямое редактирование
-Отредактируйте основной файл сервиса, изменив переменные окружения.
+# В открывшемся редакторе добавьте:
+```
+
+```ini
+[Service]
+Environment=USE_AI=true
+Environment=OPENAI_API_KEY=sk-your-actual-openai-api-key-here
+```
+
+```bash
+# Сохраните файл (Ctrl+X, Y, Enter) и перезапустите сервис
+sudo systemctl daemon-reload
+sudo systemctl restart sitecheck
+sudo systemctl status sitecheck
+```
+
+### Способ 2: Прямое редактирование файла сервиса
+
+```bash
+# Остановка сервиса
+sudo systemctl stop sitecheck
+
+# Редактирование файла сервиса
+sudo nano /etc/systemd/system/sitecheck.service
+
+# Найдите и измените строки:
+# Environment=USE_AI=false  →  Environment=USE_AI=true
+# # Environment=OPENAI_API_KEY=sk-your-openai-api-key-here  →  Environment=OPENAI_API_KEY=sk-your-actual-key
+
+# Перезагрузка и запуск
+sudo systemctl daemon-reload
+sudo systemctl start sitecheck
+sudo systemctl status sitecheck
+```
+
+### Способ 3: Файл окружения
+
+```bash
+# Создание файла окружения
+sudo tee /opt/sitecheck/.env << 'EOF'
+DATABASE_URL=sitecheck_user:SecurePassword123!@tcp(localhost:3306)/sitecheck
+USE_AI=true
+OPENAI_API_KEY=sk-your-actual-openai-api-key-here
+EOF
+
+# Настройка прав доступа
+sudo chown sitecheck:sitecheck /opt/sitecheck/.env
+sudo chmod 600 /opt/sitecheck/.env
+
+# Создание override для использования .env файла
+sudo systemctl edit sitecheck
+
+# В редакторе добавьте:
+```
+
+```ini
+[Service]
+EnvironmentFile=/opt/sitecheck/.env
+```
+
+```bash
+# Перезапуск сервиса
+sudo systemctl daemon-reload
+sudo systemctl restart sitecheck
+
+# Проверка переменных окружения
+sudo systemctl show sitecheck --property=Environment
+```
 
 ## Обновление приложения
 
-Для обновления сервиса:
-1. Остановите сервис
-2. Обновите исходный код из репозитория
-3. Пересоберите приложение
-4. Запустите сервис
-5. Проверьте работоспособность
+```bash
+# Остановка сервиса
+sudo systemctl stop sitecheck
+
+# Переход в директорию проекта
+cd /opt/sitecheck
+
+# Создание резервной копии текущей версии
+sudo -u sitecheck cp sitecheck sitecheck.backup.$(date +%Y%m%d_%H%M%S)
+
+# Обновление исходного кода
+sudo -u sitecheck git fetch origin
+sudo -u sitecheck git pull origin master
+
+# Проверка изменений
+sudo -u sitecheck git log --oneline -5
+
+# Обновление зависимостей
+sudo -u sitecheck go mod tidy
+
+# Пересборка приложения
+sudo -u sitecheck go build -o sitecheck main.go
+
+# Настройка прав доступа
+sudo chown sitecheck:sitecheck /opt/sitecheck/sitecheck
+sudo chmod +x /opt/sitecheck/sitecheck
+
+# Запуск сервиса
+sudo systemctl start sitecheck
+
+# Проверка статуса
+sudo systemctl status sitecheck
+
+# Проверка работоспособности
+curl -v https://sitecheck.domain.com/healthz
+
+# Проверка логов
+sudo journalctl -u sitecheck --no-pager -n 10
+
+echo "Обновление завершено!"
+```
 
 ## Мониторинг и логи
 
