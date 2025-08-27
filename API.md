@@ -15,7 +15,7 @@ Site Check API предоставляет сервис для анализа и 
 
 ### 1. Анализ сайта
 
-Основной endpoint для анализа содержимого веб-сайта.
+Основной endpoint для анализа содержимого веб-сайта с расширенной информацией.
 
 **URL:** `/classify`  
 **Метод:** `POST`  
@@ -36,13 +36,6 @@ Site Check API предоставляет сервис для анализа и 
 }
 ```
 
-**Требования к URL:**
-- Должен быть валидным URL
-- Должен содержать схему (http:// или https://)
-- Должен содержать домен
-- Максимальная длина: не ограничена
-- Поддерживаемые протоколы: HTTP, HTTPS
-
 #### Ответ
 
 **Успешный ответ (200 OK):**
@@ -51,32 +44,149 @@ Site Check API предоставляет сервис для анализа и 
 |------|-----|----------|
 | `summary` | string | Краткое описание тематики сайта на русском языке |
 | `lang` | string | Язык ответа (всегда "ru") |
-| `source` | string | Источник анализа: "ai" или "heuristic" |
+| `source` | string | Источник анализа: "ai", "heuristic", "ai_quota", "ai_error" |
+| `brand` | string | Название бренда (опционально) |
+| `style_notes` | string | Заметки о стиле сайта (опционально) |
+| `keywords` | array | Массив ключевых слов (опционально) |
+| `negative_keywords` | array | Массив минус-слов (опционально) |
+| `main_colors_hex` | array | Основные цвета в HEX формате (опционально) |
+| `additional_colors_hex` | array | Дополнительные цвета в HEX формате (опционально) |
+| `background_color_hex` | string | Цвет фона в HEX формате (опционально) |
+| `accent_primary_hex` | string | Основной акцентный цвет в HEX формате (опционально) |
+| `accent_secondary_hex` | string | Вторичный акцентный цвет в HEX формате (опционально) |
 
 **Пример ответа:**
 ```json
 {
   "summary": "Интернет-магазин электроники и бытовой техники",
   "lang": "ru",
-  "source": "ai"
+  "source": "ai",
+  "brand": "TechStore",
+  "style_notes": "Современный минималистичный дизайн с акцентом на продукты",
+  "keywords": ["электроника", "техника", "смартфоны", "ноутбуки"],
+  "negative_keywords": ["ремонт", "б/у", "запчасти"],
+  "main_colors_hex": ["#2563eb", "#ffffff", "#1f2937"],
+  "background_color_hex": "#ffffff",
+  "accent_primary_hex": "#2563eb"
 }
 ```
 
-**Возможные значения `source`:**
-- `"ai"` - анализ выполнен с использованием OpenAI API
-- `"heuristic"` - анализ выполнен эвристическими методами
+### 2. Генерация креативов
 
-#### Коды ошибок
+Endpoint для создания рекламных материалов на основе анализа сайта.
 
-| Код | Описание | Пример ответа |
-|-----|----------|---------------|
-| 400 | Неверный запрос | `"bad JSON"` |
-| 400 | URL не указан | `"url is required"` |
-| 400 | Неверный URL | `"invalid url"` |
-| 405 | Неверный HTTP метод | `"use POST"` |
-| 502 | Ошибка загрузки сайта | `"fetch failed: ..."` |
+**URL:** `/creative`  
+**Метод:** `POST`  
+**Content-Type:** `application/json`
 
-### 2. Health Check
+#### Запрос
+
+**Параметры:**
+
+| Параметр | Тип | Обязательный | Описание |
+|----------|-----|--------------|----------|
+| `url` | string | Да | URL сайта для анализа |
+| `kind` | string | Да | Тип креатива: "text" или "graphic" |
+| `text_type` | string | Да для kind="text" | Тип текста: "keywords", "negatives", "ads" |
+| `goal` | string | Нет | Цель рекламной кампании (для graphic) |
+| `audience` | string | Нет | Целевая аудитория (для graphic) |
+| `geo` | string | Нет | Географическая привязка (для graphic) |
+| `offer_constraints` | string | Нет | Ограничения предложения (для graphic) |
+| `brand_overrides` | string | Нет | Переопределения бренда (для graphic) |
+
+**Примеры запросов:**
+
+Генерация ключевых слов:
+```json
+{
+  "url": "https://example.com",
+  "kind": "text",
+  "text_type": "keywords"
+}
+```
+
+Генерация графических концептов:
+```json
+{
+  "url": "https://example.com",
+  "kind": "graphic",
+  "goal": "Увеличение продаж",
+  "audience": "Молодые профессионалы 25-35 лет",
+  "geo": "Москва"
+}
+```
+
+#### Ответ
+
+**Для text креативов:**
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `kind` | string | "text" |
+| `lang` | string | "ru" |
+| `source` | string | Источник: "ai" или "ai_error" |
+| `text_type` | string | Тип текста: "keywords", "negatives", "ads" |
+| `keywords` | array | Массив ключевых слов (для text_type="keywords") |
+| `negatives` | array | Массив минус-слов (для text_type="negatives") |
+| `ads` | array | Массив рекламных блоков (для text_type="ads") |
+
+**Для graphic креативов:**
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `kind` | string | "graphic" |
+| `lang` | string | "ru" |
+| `source` | string | Источник: "ai" или "ai_error" |
+| `graphic` | object | Объект с графическим планом |
+
+### 3. Генерация изображений
+
+Endpoint для создания изображений по текстовому описанию.
+
+**URL:** `/image`  
+**Метод:** `POST`  
+**Content-Type:** `application/json`
+
+#### Запрос
+
+**Параметры:**
+
+| Параметр | Тип | Обязательный | Описание |
+|----------|-----|--------------|----------|
+| `prompt` | string | Да | Текстовое описание изображения |
+| `size` | string | Нет | Размер изображения (по умолчанию "1024x1024") |
+| `response_format` | string | Нет | Формат ответа: "url" или "b64_json" (по умолчанию "url") |
+
+**Поддерживаемые размеры:**
+- `1024x1024` (квадрат)
+- `1536x1024` (широкий)
+- `1024x1536` (вертикальный)
+
+**Пример запроса:**
+```json
+{
+  "prompt": "Современный офис с компьютерами и технологиями",
+  "size": "1024x1024",
+  "response_format": "url"
+}
+```
+
+#### Ответ
+
+**Успешный ответ (200 OK):**
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `prompt` | string | Исходный промпт |
+| `size` | string | Размер изображения |
+| `response_format` | string | Формат ответа |
+| `url` | string | URL изображения (если response_format="url") |
+| `b64_json` | string | Base64 изображения (если response_format="b64_json") |
+| `lang` | string | "ru" |
+| `source` | string | "ai" или "ai_error" |
+| `error` | string | Описание ошибки (при наличии) |
+
+### 4. Health Check
 
 Endpoint для проверки состояния сервиса.
 
@@ -90,6 +200,16 @@ Endpoint для проверки состояния сервиса.
 ok
 ```
 
+## Коды ошибок
+
+| Код | Описание | Возможные причины |
+|-----|----------|-------------------|
+| 400 | Bad Request | Неверный JSON, отсутствует обязательный параметр, неверный URL |
+| 405 | Method Not Allowed | Использован неверный HTTP метод |
+| 502 | Bad Gateway | Ошибка при загрузке целевого сайта |
+| 503 | Service Unavailable | AI отключен |
+| 500 | Internal Server Error | Внутренняя ошибка сервера |
+
 ## Примеры использования
 
 ### cURL
@@ -100,128 +220,71 @@ curl -X POST https://your-domain.com/classify \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com"}'
 
+# Генерация ключевых слов
+curl -X POST https://your-domain.com/creative \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com", "kind": "text", "text_type": "keywords"}'
+
+# Генерация минус-слов
+curl -X POST https://your-domain.com/creative \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com", "kind": "text", "text_type": "negatives"}'
+
+# Генерация рекламных объявлений
+curl -X POST https://your-domain.com/creative \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com", "kind": "text", "text_type": "ads"}'
+
+# Генерация графических концептов
+curl -X POST https://your-domain.com/creative \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com",
+    "kind": "graphic",
+    "goal": "Увеличение продаж",
+    "audience": "Молодые профессионалы 25-35 лет",
+    "geo": "Москва"
+  }'
+
+# Генерация изображения (URL)
+curl -X POST https://your-domain.com/image \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Современный офис с компьютерами и технологиями",
+    "size": "1024x1024",
+    "response_format": "url"
+  }'
+
+# Генерация изображения (Base64)
+curl -X POST https://your-domain.com/image \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Логотип IT компании в минималистичном стиле",
+    "size": "1024x1024",
+    "response_format": "b64_json"
+  }'
+
 # Health check
 curl https://your-domain.com/healthz
-```
-
-### JavaScript (fetch)
-
-```javascript
-// Анализ сайта
-async function analyzeSite(url) {
-  try {
-    const response = await fetch('https://your-domain.com/classify', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ url: url })
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    return data;
-  } catch (error) {
-    console.error('Error:', error);
-    throw error;
-  }
-}
-
-// Использование
-analyzeSite('https://example.com')
-  .then(result => {
-    console.log('Анализ сайта:', result.summary);
-    console.log('Источник:', result.source);
-  })
-  .catch(error => {
-    console.error('Ошибка анализа:', error);
-  });
-```
-
-### Python (requests)
-
-```python
-import requests
-import json
-
-def analyze_site(url):
-    """Анализ сайта через Site Check API"""
-    api_url = "https://your-domain.com/classify"
-    
-    payload = {"url": url}
-    headers = {"Content-Type": "application/json"}
-    
-    try:
-        response = requests.post(api_url, 
-                               data=json.dumps(payload), 
-                               headers=headers,
-                               timeout=30)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"Ошибка запроса: {e}")
-        return None
-
-# Использование
-result = analyze_site("https://example.com")
-if result:
-    print(f"Описание: {result['summary']}")
-    print(f"Источник анализа: {result['source']}")
-```
-
-### PHP
-
-```php
-<?php
-function analyzeSite($url) {
-    $apiUrl = 'https://your-domain.com/classify';
-    
-    $data = json_encode(['url' => $url]);
-    
-    $options = [
-        'http' => [
-            'header' => "Content-Type: application/json\r\n",
-            'method' => 'POST',
-            'content' => $data,
-            'timeout' => 30
-        ]
-    ];
-    
-    $context = stream_context_create($options);
-    $result = file_get_contents($apiUrl, false, $context);
-    
-    if ($result === FALSE) {
-        return null;
-    }
-    
-    return json_decode($result, true);
-}
-
-// Использование
-$result = analyzeSite('https://example.com');
-if ($result) {
-    echo "Описание: " . $result['summary'] . "\n";
-    echo "Источник: " . $result['source'] . "\n";
-}
-?>
 ```
 
 ## Особенности работы
 
 ### Таймауты
 
-- **Общий таймаут запроса:** 12 секунд
-- **Таймаут загрузки сайта:** 10 секунд
-- **Таймаут AI-анализа:** 15 секунд (при включенном AI)
+- **Анализ сайта (/classify):** 12 секунд
+- **Генерация креативов (/creative):** 60 секунд
+- **Генерация изображений (/image):** 45 секунд
+- **Загрузка сайта:** 10 секунд
+- **AI-анализ:** 15 секунд
 
 ### Лимиты
 
 - **Размер HTML:** максимум 2MB
-- **Размер текста для AI:** максимум 4000 символов
-- **Длина ответа:** обычно 50-200 символов
+- **Размер текста для AI:** 
+  - Анализ сайта: максимум 4000 символов
+  - Креативы: максимум 12000 символов
+- **Размеры изображений:** 1024x1024, 1536x1024, 1024x1536
 
 ### Обработка контента
 
@@ -230,13 +293,19 @@ if ($result) {
 3. **Анализ содержимого:** 
    - При включенном AI: отправка в OpenAI для анализа
    - При отключенном AI: эвристический анализ по ключевым словам
-4. **Формирование ответа:** Возврат краткого описания на русском языке
+4. **Формирование ответа:** Возврат результата на русском языке
+
+### Генерация изображений
+
+- **Автоматическая генерация:** При запросе графических концептов изображения генерируются автоматически
+- **Форматы ответа:** URL или Base64
+- **Встроенные промпты:** Для графических концептов создаются оптимизированные промпты
 
 ### Fallback механизмы
 
 Если основной анализ не удается, сервис использует:
 1. Title страницы
-2. Meta description
+2. Meta description  
 3. Доменное имя
 4. Стандартное сообщение "Не удалось определить тематику сайта"
 
@@ -296,8 +365,11 @@ curl --max-time 5 https://your-domain.com/healthz
 ### Метрики производительности
 
 Типичное время ответа:
-- **Эвристический анализ:** 1-3 секунды
-- **AI-анализ:** 3-8 секунд
+- **Анализ сайта (эвристический):** 1-3 секунды
+- **Анализ сайта (AI):** 3-8 секунд
+- **Генерация текстовых креативов:** 5-15 секунд
+- **Генерация графических концептов:** 30-60 секунд
+- **Генерация изображений:** 10-30 секунд
 - **Health check:** < 100ms
 
 ## Поддержка
