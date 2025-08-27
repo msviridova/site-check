@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+// ==== HTTP-обработчик ====
+
 func classifyHandler(w http.ResponseWriter, r *http.Request) {
 	// 1) только POST
 	if r.Method != http.MethodPost {
@@ -72,18 +74,23 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 			if b := strings.TrimSpace(brief); b != "" {
 				shortInput += "\nTitle/Meta: " + b
 			}
-			sum, kws, negs, aiErr := summarizeWithAI(ctx, shortInput)
+			sum, kws, negs, cols, aiErr := summarizeWithAI(ctx, shortInput)
 			log.Printf("AI (short-text) finished, err=%v", aiErr)
 			if aiErr == nil && strings.TrimSpace(sum) != "" {
 				resp := classifyResponse{
-					Summary:            sum,
-					Lang:               "ru",
-					Source:             "ai",
-					Keywords:           kws,
-					NegativeKeywords:   negs,
-					Brand:              brand,
-					ExtractedColorsHex: palette,
-					StyleNotes:         styleNotes,
+					Summary:  sum,
+					Lang:     "ru",
+					Source:   "ai",
+					Keywords: kws, NegativeKeywords: negs,
+
+					Brand:      brand,
+					StyleNotes: styleNotes,
+
+					MainColorsHex:       nilIfNilSlice(cols, func(c *AIColors) []string { return c.Main }),
+					AdditionalColorsHex: nilIfNilSlice(cols, func(c *AIColors) []string { return c.Additional }),
+					BackgroundColorHex:  ifCols(cols, func(c *AIColors) string { return c.Background }),
+					AccentPrimaryHex:    ifCols(cols, func(c *AIColors) string { return c.AccentPrimary }),
+					AccentSecondaryHex:  ifCols(cols, func(c *AIColors) string { return c.AccentSecondary }),
 				}
 				w.Header().Set("Content-Type", "application/json; charset=utf-8")
 				_ = json.NewEncoder(w).Encode(resp)
@@ -101,12 +108,11 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 			summary = "Веб-сайт компании/сервиса " + u.Hostname()
 		}
 		resp := classifyResponse{
-			Summary:            summary,
-			Lang:               "ru",
-			Source:             "heuristic",
-			Brand:              brand,
-			ExtractedColorsHex: palette,
-			StyleNotes:         styleNotes,
+			Summary:    summary,
+			Lang:       "ru",
+			Source:     "heuristic",
+			Brand:      brand,
+			StyleNotes: styleNotes,
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(resp)
@@ -122,24 +128,25 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 		source  string
 		kws     []string
 		negs    []string
+		cols    *AIColors
 	)
 	if useAI {
 		source = "ai"
-		sum, kk, nn, aiErr := summarizeWithAI(ctx, text)
+		sum, kk, nn, cc, aiErr := summarizeWithAI(ctx, text)
 		log.Printf("AI call finished, err=%v", aiErr)
 		if aiErr != nil || strings.TrimSpace(sum) == "" {
 			log.Println("AI failed or empty → fallback to heuristic")
 			summary = heuristicSummarize(text)
 			source = "heuristic"
 		} else {
-			summary, kws, negs = sum, kk, nn
+			summary, kws, negs, cols = sum, kk, nn, cc
 		}
 	} else {
 		summary = heuristicSummarize(text)
 		source = "heuristic"
 	}
 
-	// стоп‑фолбэк
+	// стоп-фолбэк
 	if strings.TrimSpace(summary) == "" {
 		log.Println("summary is empty → using title/meta/host fallback")
 		summary = fallbackSummary(u, html)
@@ -150,18 +157,43 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ответ + финал лога
 	resp := classifyResponse{
-		Summary:            summary,
-		Lang:               "ru",
-		Source:             source,
-		Keywords:           kws,
-		NegativeKeywords:   negs,
-		Brand:              brand,
-		ExtractedColorsHex: palette,
-		StyleNotes:         styleNotes,
+		Summary:  summary,
+		Lang:     "ru",
+		Source:   source,
+		Keywords: kws, NegativeKeywords: negs,
+
+		Brand:      brand,
+		StyleNotes: styleNotes,
+
+		MainColorsHex:       nilIfNilSlice(cols, func(c *AIColors) []string { return c.Main }),
+		AdditionalColorsHex: nilIfNilSlice(cols, func(c *AIColors) []string { return c.Additional }),
+		BackgroundColorHex:  ifCols(cols, func(c *AIColors) string { return c.Background }),
+		AccentPrimaryHex:    ifCols(cols, func(c *AIColors) string { return c.AccentPrimary }),
+		AccentSecondaryHex:  ifCols(cols, func(c *AIColors) string { return c.AccentSecondary }),
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(resp)
 
 	respJSON, _ := json.Marshal(resp)
 	apiLogFinish(ctx, apiID, http.StatusOK, string(respJSON), "", time.Since(apiStart))
+}
+
+// безопасные «мостики» чтобы не натыкаться на nil
+func ifCols[T any](c *AIColors, get func(*AIColors) T) T {
+	var zero T
+	if c == nil {
+		return zero
+	}
+	return get(c)
+}
+
+func nilIfNilSlice[T any](c *AIColors, get func(*AIColors) []T) []T {
+	if c == nil {
+		return nil
+	}
+	v := get(c)
+	if len(v) == 0 {
+		return nil
+	}
+	return v
 }
