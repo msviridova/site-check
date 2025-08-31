@@ -2,21 +2,16 @@ package main
 
 // ====== запрос для /creative ======
 type CreativeRequest struct {
-	// Общие
-	URL string `json:"url"`
-
-	// Что генерируем: "text" | "graphic"
-	Kind string `json:"kind"`
-
-	// Для Kind="text": "keywords" | "negatives" | "ads"
-	TextType string `json:"text_type,omitempty"`
-
-	// Доп. опции для графики (необязательные)
+	Kind             string `json:"kind"`                // "text" | "graphic"
+	TextType         string `json:"text_type,omitempty"` // "keywords" | "negatives" | "ads"
+	SiteText         string `json:"site_text"`           // ОБЯЗАТЕЛЕН
+	SiteURL          string `json:"site_url,omitempty"`  // опционально, только как контекст
 	Goal             string `json:"goal,omitempty"`
 	Audience         string `json:"audience,omitempty"`
 	Geo              string `json:"geo,omitempty"`
 	OfferConstraints string `json:"offer_constraints,omitempty"`
 	BrandOverrides   string `json:"brand_overrides,omitempty"`
+	PreferredAspect  string `json:"preferred_aspect,omitempty"` // "1x1" | "4x1" | "1x2"
 }
 
 // ====== ответ для /creative ======
@@ -134,9 +129,8 @@ type GraphicPlan struct {
 
 type ImageRequest struct {
 	Prompt         string `json:"prompt"`
-	Size           string `json:"size,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"`
-	Source         string `json:"source,omitempty"`
+	Size           string `json:"size,omitempty"`            // "1:1", "3:2", "2:3"
+	ResponseFormat string `json:"response_format,omitempty"` // "url" или "b64_json"
 }
 
 type ImageResponse struct {

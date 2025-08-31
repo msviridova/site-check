@@ -3,13 +3,58 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	"log"
+	"fmt"
 	"net/http"
-	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
+
+// choosePromptAndAspectFromStrings выбирает промпт и размер по предпочтению.
+// Если preferred пустой или неизвестный — берём 1x1.
+func choosePromptAndAspectFromStrings(sq1x1, ar4x1, ar1x2, preferred string) (prompt string, aspect string, size string) {
+	switch strings.TrimSpace(preferred) {
+	case "4x1":
+		if p := strings.TrimSpace(ar4x1); p != "" {
+			return p, "4x1", "1536x1024"
+		}
+		// fallback к квадрату
+		if p := strings.TrimSpace(sq1x1); p != "" {
+			return p, "1x1", ""
+		}
+		if p := strings.TrimSpace(ar1x2); p != "" {
+			return p, "1x2", "1024x1536"
+		}
+	case "1x2":
+		if p := strings.TrimSpace(ar1x2); p != "" {
+			return p, "1x2", "1024x1536"
+		}
+		// fallback к квадрату
+		if p := strings.TrimSpace(sq1x1); p != "" {
+			return p, "1x1", ""
+		}
+		if p := strings.TrimSpace(ar4x1); p != "" {
+			return p, "4x1", "1536x1024"
+		}
+	default: // "1x1" или пусто
+		if p := strings.TrimSpace(sq1x1); p != "" {
+			// для квадрата размер не указываем — API возьмёт default 1024x1024
+			return p, "1x1", ""
+		}
+		// fallback: возьмём что есть
+		if p := strings.TrimSpace(ar4x1); p != "" {
+			return p, "4x1", "1536x1024"
+		}
+		if p := strings.TrimSpace(ar1x2); p != "" {
+			return p, "1x2", "1024x1536"
+		}
+	}
+	// если вообще пусто — вернём пустые
+	return "", "", ""
+}
 
 func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -23,37 +68,19 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw := strings.TrimSpace(req.URL)
-	if raw == "" {
-		http.Error(w, "url is required", http.StatusBadRequest)
-		return
-	}
-	u, err := url.ParseRequestURI(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		http.Error(w, "invalid url", http.StatusBadRequest)
+	siteText := strings.TrimSpace(req.SiteText)
+	if siteText == "" {
+		http.Error(w, "site_text is required", http.StatusBadRequest)
 		return
 	}
 
-	// общий таймаут (подлиннее, т.к. возможна генерация картинок)
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 75*time.Second)
 	defer cancel()
 
 	// лог API
 	rawReq, _ := json.Marshal(req)
 	apiStart := time.Now()
-	apiID, _ := apiLogStart(ctx, "/creative", u.String(), string(rawReq))
-
-	// забираем контент
-	html, err := fetchHTML(ctx, u.String())
-	if err != nil {
-		http.Error(w, "fetch failed: "+err.Error(), http.StatusBadGateway)
-		apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "fetch failed: "+err.Error(), time.Since(apiStart))
-		return
-	}
-	siteText := extractVisibleText(html)
-	if len(siteText) > 12000 {
-		siteText = siteText[:12000]
-	}
+	apiID, _ := apiLogStart(ctx, "/creative", strings.TrimSpace(req.SiteURL), string(rawReq))
 
 	var resp CreativeResponse
 	resp.Kind = req.Kind
@@ -117,43 +144,43 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 			OfferConstraints: req.OfferConstraints,
 			BrandOverrides:   req.BrandOverrides,
 		}
-		gp, err := generateGraphic(ctx, u.String(), siteText, opts)
+		gp, err := generateGraphic(ctx, strings.TrimSpace(req.SiteURL), siteText, opts)
 		if err != nil {
 			resp.Source = "ai_error"
 			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
 			apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "AI error: "+err.Error(), time.Since(apiStart))
 			return
 		}
+		resp.Graphic = gp
 
-		// Генерация изображений сразу в base64 и вклейка в image_urls
-		for i := range gp.Concepts {
-			// 1x1
-			if prompt := strings.TrimSpace(gp.Concepts[i].ImagePrompts.Sq1x1); prompt != "" {
-				if b64, err := generateImage(ctx, prompt, "1024x1024", "b64_json"); err == nil {
-					gp.Concepts[i].ImageURLs.Sq1x1 = b64
-				} else {
-					log.Printf("[image] 1x1 generation failed: %v", err)
+		// Сразу генерим одну картинку по предпочтению запроса (или 1x1 по умолчанию).
+		if len(gp.Concepts) > 0 {
+			c0 := gp.Concepts[0]
+			prompt, aspect, size := choosePromptAndAspectFromStrings(
+				c0.ImagePrompts.Sq1x1,
+				c0.ImagePrompts.Ar4x1,
+				c0.ImagePrompts.Ar1x2,
+				req.PreferredAspect, // "1x1" | "4x1" | "1x2" | ""
+			)
+			if strings.TrimSpace(prompt) != "" {
+				// берём base64 — чтобы сразу сохранить и открыть PNG
+				b64, genErr := generateImage(ctx, prompt, size, "b64_json")
+				if genErr == nil && strings.TrimSpace(b64) != "" {
+					// сохраняем PNG
+					ts := time.Now().Format("20060102_150405")
+					if aspect == "" {
+						aspect = "1x1"
+					}
+					filename := fmt.Sprintf("creative_%s_%s.png", ts, aspect)
+					if data, decErr := base64.StdEncoding.DecodeString(b64); decErr == nil {
+						_ = os.WriteFile(filename, data, 0644)
+						// попробуем открыть (macOS); если не получится — просто игнорируем
+						_ = exec.Command("open", filename).Start()
+					}
 				}
-			}
-			// 4x1 → используется допустимый размер 1536x1024 (широкий)
-			if prompt := strings.TrimSpace(gp.Concepts[i].ImagePrompts.Ar4x1); prompt != "" {
-				if b64, err := generateImage(ctx, prompt, "1536x1024", "b64_json"); err == nil {
-					gp.Concepts[i].ImageURLs.Ar4x1 = b64
-				} else {
-					log.Printf("[image] 4x1 generation failed: %v", err)
-				}
-			}
-			// 1x2 → используем 1024x1536 (вертикальный)
-			if prompt := strings.TrimSpace(gp.Concepts[i].ImagePrompts.Ar1x2); prompt != "" {
-				if b64, err := generateImage(ctx, prompt, "1024x1536", "b64_json"); err == nil {
-					gp.Concepts[i].ImageURLs.Ar1x2 = b64
-				} else {
-					log.Printf("[image] 1x2 generation failed: %v", err)
-				}
+				// если не удалось — просто продолжим без падения; JSON-ответ вернём как есть (gp)
 			}
 		}
-
-		resp.Graphic = gp
 
 	default:
 		http.Error(w, "kind must be: text | graphic", http.StatusBadRequest)
