@@ -11,6 +11,82 @@ import (
 
 // ====== ТЕКСТОВЫЕ КРЕАТИВЫ ======
 
+// TextCreatives содержит все типы текстовых креативов
+type TextCreatives struct {
+	Keywords  []string  `json:"keywords"`
+	Negatives []string  `json:"negatives"`
+	Ads       []AdBlock `json:"ads"`
+}
+
+// generateAllTextCreatives генерирует все типы текстовых креативов за один запрос к OpenAI
+func generateAllTextCreatives(ctx context.Context, siteText string) (*TextCreatives, error) {
+	prompt := `Ты — ИИ-агент для генерации рекламных материалов для Яндекс.Директ.
+Анализируй только предоставленный текст сайта и сгенерируй все необходимые материалы.
+
+**Контент сайта:**
+` + siteText + `
+
+Сформируй СТРОГО валидный JSON со всеми типами креативов:
+
+{
+  "keywords": [
+    "ключевое слово 1",
+    "ключевое слово 2"
+  ],
+  "negatives": [
+    "минус-слово 1",
+    "минус-слово 2"
+  ],
+  "ads": [
+    {
+      "id": "AD1",
+      "header": "Заголовок ≤56 символов",
+      "text": "Текст ≤81 символ, с CTA",
+      "links": [
+        {"url":"https://...", "title":"≤30", "desc":"≤60"},
+        {"url":"https://...", "title":"≤30", "desc":"≤60"}
+      ],
+      "details": ["Уточнение1", "Уточнение2"]
+    }
+  ]
+}
+
+Требования:
+1. **Keywords**: 30-40 релевантных ключевых слов и фраз для контекстной рекламы. Без "дешево/лучший/топ", без орфографических ошибок.
+2. **Negatives**: 30-50 минус-слов для отсечения нерелевантного трафика (бесплатные, вакансии, конкуренты, нерелевантные запросы).
+3. **Ads**: 5 рекламных объявлений с соблюдением лимитов символов Яндекс.Директ.
+
+Если данных недостаточно для какого-то поля — оставь пустой массив или пропусти необязательные поля.`
+
+	resp, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model: modelName,
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage(prompt),
+		},
+		MaxTokens:   openai.Int(2500),
+		Temperature: openai.Float(0.3),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Choices) == 0 {
+		return nil, errors.New("no choices from AI")
+	}
+
+	raw := strings.TrimSpace(resp.Choices[0].Message.Content)
+
+	var result TextCreatives
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil, err
+	}
+
+	// Дедупликация ключевых слов и минус-слов
+	result.Keywords = dedup(result.Keywords)
+	result.Negatives = dedup(result.Negatives)
+
+	return &result, nil
+}
+
 func generateKeywords(ctx context.Context, siteText string) ([]string, error) {
 	p := strings.ReplaceAll(promptKeywords, "{website_text}", siteText)
 
