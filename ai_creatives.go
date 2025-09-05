@@ -1,3 +1,4 @@
+// ai_creatives.go
 package main
 
 import (
@@ -18,45 +19,16 @@ type TextCreatives struct {
 	Ads       []AdBlock `json:"ads"`
 }
 
-// generateAllTextCreatives генерирует все типы текстовых креативов за один запрос к OpenAI
+// generateAllTextCreatives — генерирует keywords, negatives и ads одним промптом из БД
+// Ожидается, что в БД лежит ключ 'creative_text_all' с плейсхолдером {website_text}
 func generateAllTextCreatives(ctx context.Context, siteText string) (*TextCreatives, error) {
-	prompt := `Ты — ИИ-агент для генерации рекламных материалов для Яндекс.Директ.
-Анализируй только предоставленный текст сайта и сгенерируй все необходимые материалы.
+	const promptKey = "creative_all_text"
 
-**Контент сайта:**
-` + siteText + `
-
-Сформируй СТРОГО валидный JSON со всеми типами креативов:
-
-{
-  "keywords": [
-    "ключевое слово 1",
-    "ключевое слово 2"
-  ],
-  "negatives": [
-    "минус-слово 1",
-    "минус-слово 2"
-  ],
-  "ads": [
-    {
-      "id": "AD1",
-      "header": "Заголовок ≤56 символов",
-      "text": "Текст ≤81 символ, с CTA",
-      "links": [
-        {"url":"https://...", "title":"≤30", "desc":"≤60"},
-        {"url":"https://...", "title":"≤30", "desc":"≤60"}
-      ],
-      "details": ["Уточнение1", "Уточнение2"]
-    }
-  ]
-}
-
-Требования:
-1. **Keywords**: 30-40 релевантных ключевых слов и фраз для контекстной рекламы. Без "дешево/лучший/топ", без орфографических ошибок.
-2. **Negatives**: 30-50 минус-слов для отсечения нерелевантного трафика (бесплатные, вакансии, конкуренты, нерелевантные запросы).
-3. **Ads**: 5 рекламных объявлений с соблюдением лимитов символов Яндекс.Директ.
-
-Если данных недостаточно для какого-то поля — оставь пустой массив или пропусти необязательные поля.`
+	p, err := getPrompt(db, promptKey, "ru", 0)
+	if err != nil {
+		return nil, errors.New("prompt not found: " + promptKey)
+	}
+	prompt := strings.ReplaceAll(p.Text, "{website_text}", siteText)
 
 	resp, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: modelName,
@@ -87,13 +59,24 @@ func generateAllTextCreatives(ctx context.Context, siteText string) (*TextCreati
 	return &result, nil
 }
 
+// generateKeywords — берёт промпт из БД по ключу 'creative_text_keywords'
+// Ожидаемые варианты ответа:
+// 1) {"keywords": { "категория1":[], "категория2": [] }}
+// 2) ["фраза 1","фраза 2",...]
+// 3) текст построчно
 func generateKeywords(ctx context.Context, siteText string) ([]string, error) {
-	p := strings.ReplaceAll(promptKeywords, "{website_text}", siteText)
+	const promptKey = "creative_text_keywords"
+
+	p, err := getPrompt(db, promptKey, "ru", 0)
+	if err != nil {
+		return nil, errors.New("prompt not found: " + promptKey)
+	}
+	prompt := strings.ReplaceAll(p.Text, "{website_text}", siteText)
 
 	resp, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: modelName,
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(p),
+			openai.UserMessage(prompt),
 		},
 		MaxTokens:   openai.Int(1000),
 		Temperature: openai.Float(0.2),
@@ -107,25 +90,25 @@ func generateKeywords(ctx context.Context, siteText string) ([]string, error) {
 
 	raw := strings.TrimSpace(resp.Choices[0].Message.Content)
 
-	// ожидаем JSON вида {"keywords": { "общие":[], "продукты_услуги":[] ... }}
-	var tmp struct {
+	// вариант {"keywords": {...}}
+	var obj struct {
 		Keywords map[string][]string `json:"keywords"`
 	}
-	if jerr := json.Unmarshal([]byte(raw), &tmp); jerr == nil {
+	if jerr := json.Unmarshal([]byte(raw), &obj); jerr == nil && obj.Keywords != nil {
 		var out []string
-		for _, arr := range tmp.Keywords {
+		for _, arr := range obj.Keywords {
 			out = append(out, arr...)
 		}
 		return dedup(out), nil
 	}
 
-	// fallback: массив строк
+	// вариант ["...","..."]
 	var flat []string
 	if jerr2 := json.Unmarshal([]byte(raw), &flat); jerr2 == nil {
 		return dedup(flat), nil
 	}
 
-	// fallback: разделение по строкам
+	// fallback — построчно
 	lines := strings.Split(raw, "\n")
 	var out []string
 	for _, l := range lines {
@@ -136,13 +119,21 @@ func generateKeywords(ctx context.Context, siteText string) ([]string, error) {
 	return dedup(out), nil
 }
 
+// generateNegatives — берёт промпт из БД по ключу 'creative_text_negatives'
+// Ожидаемые варианты аналогичны generateKeywords
 func generateNegatives(ctx context.Context, siteText string) ([]string, error) {
-	p := strings.ReplaceAll(promptNegatives, "{website_text}", siteText)
+	const promptKey = "creative_text_negatives"
+
+	p, err := getPrompt(db, promptKey, "ru", 0)
+	if err != nil {
+		return nil, errors.New("prompt not found: " + promptKey)
+	}
+	prompt := strings.ReplaceAll(p.Text, "{website_text}", siteText)
 
 	resp, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: modelName,
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(p),
+			openai.UserMessage(prompt),
 		},
 		MaxTokens:   openai.Int(1000),
 		Temperature: openai.Float(0.2),
@@ -156,24 +147,25 @@ func generateNegatives(ctx context.Context, siteText string) ([]string, error) {
 
 	raw := strings.TrimSpace(resp.Choices[0].Message.Content)
 
-	var tmp struct {
+	// вариант {"negatives": {...}}
+	var obj struct {
 		Negatives map[string][]string `json:"negatives"`
 	}
-	if jerr := json.Unmarshal([]byte(raw), &tmp); jerr == nil {
+	if jerr := json.Unmarshal([]byte(raw), &obj); jerr == nil && obj.Negatives != nil {
 		var out []string
-		for _, arr := range tmp.Negatives {
+		for _, arr := range obj.Negatives {
 			out = append(out, arr...)
 		}
 		return dedup(out), nil
 	}
 
-	// fallback: массив строк
+	// вариант ["...","..."]
 	var flat []string
 	if jerr2 := json.Unmarshal([]byte(raw), &flat); jerr2 == nil {
 		return dedup(flat), nil
 	}
 
-	// fallback: разделение по строкам
+	// fallback — построчно
 	lines := strings.Split(raw, "\n")
 	var out []string
 	for _, l := range lines {
@@ -184,13 +176,21 @@ func generateNegatives(ctx context.Context, siteText string) ([]string, error) {
 	return dedup(out), nil
 }
 
+// generateAds — берёт промпт из БД по ключу 'creative_text_ads'
+// Ожидается JSON-массив []AdBlock
 func generateAds(ctx context.Context, siteText string) ([]AdBlock, error) {
-	p := strings.ReplaceAll(promptAds, "{website_text}", siteText)
+	const promptKey = "creative_text_ads"
+
+	p, err := getPrompt(db, promptKey, "ru", 0)
+	if err != nil {
+		return nil, errors.New("prompt not found: " + promptKey)
+	}
+	prompt := strings.ReplaceAll(p.Text, "{website_text}", siteText)
 
 	resp, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: modelName,
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(p),
+			openai.UserMessage(prompt),
 		},
 		MaxTokens:   openai.Int(1200),
 		Temperature: openai.Float(0.3),
@@ -213,19 +213,30 @@ func generateAds(ctx context.Context, siteText string) ([]AdBlock, error) {
 
 // ====== ГРАФИКА ======
 
+// generateGraphic — берёт промпт из БД по ключу 'creative_graphic'
+// Поддержанные плейсхолдеры в тексте промпта:
+// {website_text}, {site_url}, {goal}, {audience}, {geo}, {offer_constraints}, {brand_overrides}
 func generateGraphic(ctx context.Context, siteURL, siteText string, opts GraphicInputOpts) (*GraphicPlan, error) {
-	p := strings.ReplaceAll(promptGraphic, "{website_text}", siteText)
-	p = strings.ReplaceAll(p, "{site_url}", siteURL)
-	p = strings.ReplaceAll(p, "{goal}", nz(opts.Goal))
-	p = strings.ReplaceAll(p, "{audience}", nz(opts.Audience))
-	p = strings.ReplaceAll(p, "{geo}", nz(opts.Geo))
-	p = strings.ReplaceAll(p, "{offer_constraints}", nz(opts.OfferConstraints))
-	p = strings.ReplaceAll(p, "{brand_overrides}", nz(opts.BrandOverrides))
+	const promptKey = "creative_graphic"
+
+	p, err := getPrompt(db, promptKey, "ru", 0)
+	if err != nil {
+		return nil, errors.New("prompt not found: " + promptKey)
+	}
+
+	pp := p.Text
+	pp = strings.ReplaceAll(pp, "{website_text}", siteText)
+	pp = strings.ReplaceAll(pp, "{site_url}", siteURL)
+	pp = strings.ReplaceAll(pp, "{goal}", nz(opts.Goal))
+	pp = strings.ReplaceAll(pp, "{audience}", nz(opts.Audience))
+	pp = strings.ReplaceAll(pp, "{geo}", nz(opts.Geo))
+	pp = strings.ReplaceAll(pp, "{offer_constraints}", nz(opts.OfferConstraints))
+	pp = strings.ReplaceAll(pp, "{brand_overrides}", nz(opts.BrandOverrides))
 
 	resp, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: modelName,
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(p),
+			openai.UserMessage(pp),
 		},
 		MaxTokens:   openai.Int(2000),
 		Temperature: openai.Float(0.5),

@@ -68,12 +68,14 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ОБЯЗАТЕЛЕН уже извлечённый текст сайта (мы сайт НЕ скачиваем)
 	siteText := strings.TrimSpace(req.SiteText)
 	if siteText == "" {
 		http.Error(w, "site_text is required", http.StatusBadRequest)
 		return
 	}
 
+	// общий таймаут на обращение к AI
 	ctx, cancel := context.WithTimeout(r.Context(), 75*time.Second)
 	defer cancel()
 
@@ -87,6 +89,7 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	resp.Lang = "ru"
 	resp.Source = "ai"
 
+	// если глобально выключен AI — сразу 503
 	if !useAI {
 		resp.Source = "ai_error"
 		http.Error(w, "AI disabled", http.StatusServiceUnavailable)
@@ -95,20 +98,22 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch strings.ToLower(req.Kind) {
+
 	case "text":
-		// Генерируем все типы текстовых креативов за один запрос
-		textCreatives, err := generateAllTextCreatives(ctx, siteText)
+		// Генерируем ВСЁ за один заход: keywords + negatives + ads
+		tc, err := generateAllTextCreatives(ctx, siteText)
 		if err != nil {
 			resp.Source = "ai_error"
 			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
 			apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "AI error: "+err.Error(), time.Since(apiStart))
 			return
 		}
-		resp.Keywords = textCreatives.Keywords
-		resp.Negatives = textCreatives.Negatives
-		resp.Ads = textCreatives.Ads
+		resp.Keywords = tc.Keywords
+		resp.Negatives = tc.Negatives
+		resp.Ads = tc.Ads
 
 	case "graphic":
+		// План по графике (промпты/рациональ/копирайт), БЕЗ скачивания сайта
 		opts := GraphicInputOpts{
 			Goal:             req.Goal,
 			Audience:         req.Audience,
@@ -125,7 +130,7 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Graphic = gp
 
-		// Сразу генерим одну картинку по предпочтению запроса (или 1x1 по умолчанию).
+		// Опционально: тут же сгенерим одну картинку для быстрого предпросмотра (локально откроется Preview).
 		if len(gp.Concepts) > 0 {
 			c0 := gp.Concepts[0]
 			prompt, aspect, size := choosePromptAndAspectFromStrings(
@@ -135,10 +140,8 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 				req.PreferredAspect, // "1x1" | "4x1" | "1x2" | ""
 			)
 			if strings.TrimSpace(prompt) != "" {
-				// берём base64 — чтобы сразу сохранить и открыть PNG
-				b64, genErr := generateImage(ctx, prompt, size, "b64_json")
-				if genErr == nil && strings.TrimSpace(b64) != "" {
-					// сохраняем PNG
+				// генерим base64 — чтобы сразу сохранить и открыть PNG
+				if b64, genErr := generateImage(ctx, prompt, size, "b64_json"); genErr == nil && strings.TrimSpace(b64) != "" {
 					ts := time.Now().Format("20060102_150405")
 					if aspect == "" {
 						aspect = "1x1"
@@ -146,11 +149,9 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 					filename := fmt.Sprintf("creative_%s_%s.png", ts, aspect)
 					if data, decErr := base64.StdEncoding.DecodeString(b64); decErr == nil {
 						_ = os.WriteFile(filename, data, 0644)
-						// попробуем открыть (macOS); если не получится — просто игнорируем
-						_ = exec.Command("open", filename).Start()
+						_ = exec.Command("open", filename).Start() // macOS: открыть Preview
 					}
 				}
-				// если не удалось — просто продолжим без падения; JSON-ответ вернём как есть (gp)
 			}
 		}
 

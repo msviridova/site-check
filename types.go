@@ -1,5 +1,7 @@
 package main
 
+import "time"
+
 // ====== запрос для /creative ======
 type CreativeRequest struct {
 	Kind             string `json:"kind"`               // "text" | "graphic"
@@ -42,10 +44,6 @@ type classifyResponse struct {
 	// Брендинг / стиль
 	Brand      string `json:"brand,omitempty"`
 	StyleNotes string `json:"style_notes,omitempty"`
-
-	// Ключевые слова
-	Keywords         []string `json:"keywords,omitempty"`
-	NegativeKeywords []string `json:"negative_keywords,omitempty"`
 
 	// Палитра (расширенная)
 	MainColorsHex       []string `json:"main_colors_hex,omitempty"`
@@ -140,4 +138,33 @@ type ImageResponse struct {
 	Lang           string `json:"lang"`
 	Source         string `json:"source"`
 	Error          string `json:"error,omitempty"`
+}
+
+// ==== PROMPTS (для хранения в БД и отдачи наружу) ====
+
+type Prompt struct {
+	ID          int       `json:"id" db:"id"`
+	KeyName     string    `json:"key_name" db:"key_name"`
+	Locale      string    `json:"locale" db:"locale"`
+	Version     int       `json:"version" db:"version"`
+	Description string    `json:"description" db:"description"`
+	Text        string    `json:"text" db:"text"`
+	IsActive    bool      `json:"is_active" db:"is_active"`
+	UpdatedBy   string    `json:"updated_by" db:"updated_by"`
+	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// ==== запрос/ответ для API ====
+
+type PromptRequest struct {
+	KeyName string `json:"key_name"` // какой промпт запрашиваем
+	Locale  string `json:"locale"`   // язык (например "ru" или "en")
+	Version int    `json:"version"`  // версия (можно оставить 0 = последняя)
+}
+
+type PromptResponse struct {
+	KeyName string `json:"key_name"`
+	Locale  string `json:"locale"`
+	Version int    `json:"version"`
+	Text    string `json:"text"`
 }

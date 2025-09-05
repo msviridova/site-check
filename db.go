@@ -99,3 +99,24 @@ func nullIfEmpty(s string) interface{} {
 	}
 	return s
 }
+
+func getPrompt(db *sql.DB, key string, locale string, version int) (*Prompt, error) {
+	q := `
+        SELECT id, key_name, locale, version, description, text, is_active, updated_by, updated_at
+        FROM prompts
+        WHERE key_name = ? AND locale = ?
+          AND (version = ? OR ? = 0)
+          AND is_active = 1
+        ORDER BY version DESC
+        LIMIT 1`
+
+	row := db.QueryRow(q, key, locale, version, version)
+	var p Prompt
+	if err := row.Scan(
+		&p.ID, &p.KeyName, &p.Locale, &p.Version, &p.Description,
+		&p.Text, &p.IsActive, &p.UpdatedBy, &p.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
