@@ -101,8 +101,6 @@ func nullIfEmpty(s string) interface{} {
 }
 
 func getPrompt(db *sql.DB, key string, locale string, version int) (*Prompt, error) {
-	log.Printf("[DEBUG] getPrompt: Called with key=%s, locale=%s, version=%d", key, locale, version)
-
 	q := `
         SELECT id, key_name, locale, version, description, text, is_active, updated_by, updated_at
         FROM prompts
@@ -112,19 +110,15 @@ func getPrompt(db *sql.DB, key string, locale string, version int) (*Prompt, err
         ORDER BY version DESC
         LIMIT 1`
 
-	log.Printf("[DEBUG] getPrompt: Executing SQL query")
 	row := db.QueryRow(q, key, locale, version, version)
 
 	var p Prompt
-	log.Printf("[DEBUG] getPrompt: About to scan result")
 	if err := row.Scan(
 		&p.ID, &p.KeyName, &p.Locale, &p.Version, &p.Description,
 		&p.Text, &p.IsActive, &p.UpdatedBy, &p.UpdatedAt,
 	); err != nil {
-		log.Printf("[DEBUG] getPrompt: Scan error: %v", err)
 		return nil, err
 	}
 
-	log.Printf("[DEBUG] getPrompt: Success! Found prompt ID=%d, KeyName=%s, Version=%d", p.ID, p.KeyName, p.Version)
 	return &p, nil
 }

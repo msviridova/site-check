@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,8 +13,6 @@ import (
 )
 
 func classifyHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("[DEBUG] classifyHandler: Request started, method=%s, url=%s", r.Method, r.URL.Path)
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "use POST", http.StatusMethodNotAllowed)
 		return
@@ -23,11 +20,9 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req classifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[DEBUG] classifyHandler: JSON decode error: %v", err)
 		http.Error(w, "bad JSON", http.StatusBadRequest)
 		return
 	}
-	log.Printf("[DEBUG] classifyHandler: Request decoded, URL=%s", req.URL)
 
 	raw := strings.TrimSpace(req.URL)
 	if raw == "" {
@@ -69,15 +64,12 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ── 4) Промпт из БД (без фолбэка)
 	const promptKey = "classify"
-	log.Printf("[DEBUG] classifyHandler: About to call getPrompt with key=%s, locale=ru, version=0", promptKey)
 	p, err := getPrompt(db, promptKey, "ru", 0)
 	if err != nil {
-		log.Printf("[DEBUG] classifyHandler: getPrompt error: %v", err)
 		http.Error(w, "prompt not found: "+promptKey, http.StatusInternalServerError)
 		apiLogFinish(ctx, apiID, http.StatusInternalServerError, "", "no prompt in DB", time.Since(apiStart))
 		return
 	}
-	log.Printf("[DEBUG] classifyHandler: getPrompt success, prompt length=%d", len(p.Text))
 	prompt := strings.TrimSpace(p.Text)
 	if prompt == "" {
 		http.Error(w, "prompt is empty: "+promptKey, http.StatusInternalServerError)

@@ -35,8 +35,6 @@ func maskKey(s string) string {
 func getEnv(k string) string { return strings.TrimSpace(os.Getenv(k)) }
 
 func main() {
-	log.Printf("[DEBUG] main: Starting application")
-
 	// ИНИЦИАЛИЗАЦИЯ глобального aiClient (ОБЯЗАТЕЛЬНО: в ai.go должно быть `var aiClient *openai.Client`)
 	aiClient = openai.NewClient(option.WithAPIKey(strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))))
 
@@ -50,19 +48,15 @@ func main() {
 		useAI, modelName, getEnv("OPENAI_API_KEY") != "", maskKey(getEnv("OPENAI_API_KEY")))
 
 	// БД
-	log.Printf("[DEBUG] main: Opening database connection")
 	db = mustOpenDB()
 	defer db.Close()
-	log.Printf("[DEBUG] main: Database connection established")
 
 	// Маршруты
-	log.Printf("[DEBUG] main: Setting up routes")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/classify", classifyHandler)
 	mux.HandleFunc("/creative", creativeHandler)
 	mux.HandleFunc("/image", imageHandler) // <— вот это обязательно
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[DEBUG] healthz: Request from %s", r.RemoteAddr)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})

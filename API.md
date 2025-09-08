@@ -221,7 +221,97 @@ Endpoint для создания изображений по текстовом�
 | `source` | string | "ai" или "ai_error" |
 | `error` | string | Описание ошибки (при наличии) |
 
-### 4. Health Check
+### 4. Управление промптами
+
+Endpoints для работы с промптами, используемыми в AI-генерации.
+
+#### 4.1. Получение промпта
+
+**URL:** `/prompts`  
+**Метод:** `POST`  
+**Content-Type:** `application/json`
+
+**Параметры запроса:**
+
+| Параметр | Тип | Обязательный | Описание |
+|----------|-----|--------------|----------|
+| `key_name` | string | Да | Системный ключ промпта |
+| `locale` | string | Нет | Язык (по умолчанию "ru") |
+| `version` | int | Нет | Версия промпта (0 = последняя активная) |
+
+**Доступные ключи промптов:**
+- `classify` - Анализ и классификация сайта
+- `creative_text_all` - Генерация всех типов текстовых креативов
+- `creative_text_keywords` - Генерация ключевых слов
+- `creative_text_negatives` - Генерация минус-слов  
+- `creative_text_ads` - Генерация рекламных объявлений
+- `creative_graphic` - Генерация графических концептов
+
+**Пример запроса:**
+```json
+{
+  "key_name": "classify",
+  "locale": "ru",
+  "version": 0
+}
+```
+
+**Ответ (200 OK):**
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `key_name` | string | Системный ключ промпта |
+| `locale` | string | Язык промпта |
+| `version` | int | Версия промпта |
+| `text` | string | Текст промпта с плейсхолдерами |
+
+**Пример ответа:**
+```json
+{
+  "key_name": "classify",
+  "locale": "ru", 
+  "version": 1,
+  "text": "Ты — маркетинговый стратег и дизайнер интерфейсов. На входе — фрагмент текста с сайта.\nСформируй аккуратный JSON с полями:\n{\"summary\": \"описание сайта\", \"brand\": \"название бренда\"...}"
+}
+```
+
+#### 4.2. Список всех промптов
+
+**URL:** `/prompts/list`  
+**Метод:** `GET`
+
+**Ответ (200 OK):**
+
+Массив объектов с информацией о промптах:
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `id` | int | ID промпта в БД |
+| `key_name` | string | Системный ключ |
+| `locale` | string | Язык |
+| `version` | int | Версия |
+| `description` | string | Описание промпта |
+| `is_active` | bool | Активен ли промпт |
+| `updated_by` | string | Кто последний раз обновлял |
+| `updated_at` | string | Время последнего обновления |
+
+**Пример ответа:**
+```json
+[
+  {
+    "id": 1,
+    "key_name": "classify",
+    "locale": "ru",
+    "version": 1,
+    "description": "Классификатор сайта (summary/brand/style/colors)",
+    "is_active": true,
+    "updated_by": "admin",
+    "updated_at": "2024-01-15T10:30:00Z"
+  }
+]
+```
+
+### 5. Health Check
 
 Endpoint для проверки состояния сервиса.
 
@@ -294,6 +384,18 @@ curl -X POST https://your-domain.com/image \
     "size": "1024x1024",
     "response_format": "b64_json"
   }'
+
+# Получение промпта
+curl -X POST https://your-domain.com/prompts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key_name": "classify",
+    "locale": "ru",
+    "version": 0
+  }'
+
+# Список всех промптов
+curl https://your-domain.com/prompts/list
 
 # Health check
 curl https://your-domain.com/healthz
