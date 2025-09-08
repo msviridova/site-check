@@ -47,41 +47,16 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	switch strings.ToLower(req.Kind) {
 
 	case "text":
-		switch strings.ToLower(req.TextType) {
-		case "keywords":
-			kws, err := generateKeywords(ctx, siteText)
-			if err != nil {
-				resp.Source = "ai_error"
-				http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
-				return
-			}
-			resp.TextType = "keywords"
-			resp.Keywords = kws
-
-		case "negatives":
-			negs, err := generateNegatives(ctx, siteText)
-			if err != nil {
-				resp.Source = "ai_error"
-				http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
-				return
-			}
-			resp.TextType = "negatives"
-			resp.Negatives = negs
-
-		case "ads":
-			ads, err := generateAds(ctx, siteText)
-			if err != nil {
-				resp.Source = "ai_error"
-				http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
-				return
-			}
-			resp.TextType = "ads"
-			resp.Ads = ads
-
-		default:
-			http.Error(w, "text_type must be: keywords | negatives | ads", http.StatusBadRequest)
+		// Генерируем все типы текстовых креативов за один запрос
+		textCreatives, err := generateAllTextCreatives(ctx, siteText)
+		if err != nil {
+			resp.Source = "ai_error"
+			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
 			return
 		}
+		resp.Keywords = textCreatives.Keywords
+		resp.Negatives = textCreatives.Negatives
+		resp.Ads = textCreatives.Ads
 
 	case "graphic":
 		opts := GraphicInputOpts{

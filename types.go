@@ -4,10 +4,9 @@ import "time"
 
 // ====== запрос для /creative ======
 type CreativeRequest struct {
-	Kind             string `json:"kind"`                // "text" | "graphic"
-	TextType         string `json:"text_type,omitempty"` // "keywords" | "negatives" | "ads"
-	SiteText         string `json:"site_text"`           // ОБЯЗАТЕЛЕН
-	SiteURL          string `json:"site_url,omitempty"`  // опционально, только как контекст
+	Kind             string `json:"kind"`               // "text" | "graphic"
+	SiteText         string `json:"site_text"`          // ОБЯЗАТЕЛЕН
+	SiteURL          string `json:"site_url,omitempty"` // опционально, только как контекст
 	Goal             string `json:"goal,omitempty"`
 	Audience         string `json:"audience,omitempty"`
 	Geo              string `json:"geo,omitempty"`
@@ -22,8 +21,7 @@ type CreativeResponse struct {
 	Lang   string `json:"lang"`   // "ru"
 	Source string `json:"source"` // "ai" | "ai_error"
 
-	// Для текстовых креативов
-	TextType  string    `json:"text_type,omitempty"` // "keywords" | "negatives" | "ads"
+	// Для текстовых креативов (все типы сразу)
 	Keywords  []string  `json:"keywords,omitempty"`
 	Negatives []string  `json:"negatives,omitempty"`
 	Ads       []AdBlock `json:"ads,omitempty"`
