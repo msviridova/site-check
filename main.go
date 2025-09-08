@@ -18,7 +18,7 @@ var (
 	useAI = strings.ToLower(os.Getenv("USE_AI")) == "true"
 
 	// модель — можно вынести в ENV при желании
-	modelName = "gpt-3.5-turbo"
+	modelName = "gpt-4.1"
 
 	// общий http‑клиент
 	httpClient = &http.Client{Timeout: 10 * time.Second}

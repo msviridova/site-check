@@ -1,0 +1,202 @@
+-----------------------------------------------------------------
+ТАБЛИЦА ДЛЯ ТЕКУЩИХ АКТИВНЫХ ПРОМПТОВ
+-----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS prompts (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  key_name      VARCHAR(64)     NOT NULL,         -- системный ключ: 'classify', 'creative_graphic', ...
+  locale        VARCHAR(8)      NOT NULL DEFAULT 'ru',  -- 'ru'/'en' и т.п.
+  version       INT             NOT NULL DEFAULT 1,     -- версионирование промптов
+  description   VARCHAR(255)             DEFAULT NULL,  -- описание для людей
+  text          LONGTEXT        NOT NULL,         -- текст промпта (с плейсхолдерами)
+  is_active     TINYINT(1)      NOT NULL DEFAULT 1,
+  updated_by    VARCHAR(64)              DEFAULT NULL,  -- кто правил
+  created_at    TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_prompts_key_locale_active (key_name, locale, version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-----------------------------------------------------------------
+ПРОМПТ НА АНАЛИЗ САЙТА
+-----------------------------------------------------------------
+
+INSERT INTO prompts (key_name, locale, version, description, text, is_active, updated_by)
+VALUES
+('classify', 'ru', 1, 'Классификатор сайта (summary/brand/style/colors)', 
+'Ты — маркетинговый стратег и дизайнер интерфейсов. На входе — фрагмент текста с сайта.
+Сформируй аккуратный JSON с полями:
+{
+"summary": string,            // подробное, но сжатое описание сайта (2–4 предложения, по делу)
+"brand": string,              // бренд (если неочевидно — доменное имя без зоны)
+"style_notes": string,        // короткие заметки по стилю (палитра/настроение/акценты)
+"main_colors_hex": [string],  // 2–4 основных цвета HEX
+"additional_colors_hex": [string], // 2–6 доп. цвета HEX
+"background_color_hex": string,
+"accent_primary_hex": string,
+"accent_secondary_hex": string
+}
+
+Контекст от эвристики (может быть неточным):
+- heuristic_brand: {HEUR_BRAND}
+- heuristic_style: {HEUR_STYLE}
+- heuristic_colors: {HEUR_COLORS}
+
+Правила:
+- Если эвристика противоречит тексту, ориентируйся на текст.
+- Цвета — ТОЛЬКО валидные HEX с "#". Если не уверен — оставляй пусто.
+- Верни СТРОГО валидный JSON без пояснений снаружи.
+
+Текст сайта (мог быть усечён):
+---
+{SITE_TEXT}
+---', 1, 'system');
+
+
+-----------------------------------------------------------------
+ПРОМПТ НА ГЕНЕРАЦИЮ КЛЮЧЕВЫХ СЛОВ
+-----------------------------------------------------------------
+
+INSERT INTO prompts (key_name, locale, version, description, text, is_active, updated_by)
+VALUES
+('creative_text_keywords', 'ru', 1, 'Подбор ключевых слов под сайт',
+'Генерация ключевых слов
+Ты — ИИ-агент, задача которого — сформировать максимально релевантный и эффективный список ключевых слов и фраз для запуска контекстной рекламы в Яндекс.Директ.
+Анализируй только предоставленный текст сайта.
+
+**Контент сайта:**
+{website_text}
+
+Требования по формату ответа:
+Верни СТРОГО валидный JSON вида:
+{
+"keywords": {
+"общие": [],
+"продукты_услуги": [],
+"бренды": [],
+"уточняющие": []
+}
+}
+
+Генерируй 30–40 запросов, без «дешево/лучший/топ», без орфографических ошибок, только релевантные.', 1, 'system');
+
+-----------------------------------------------------------------
+ПРОМПТ НА ГЕНЕРАЦИЮ МИНУС-СЛОВ
+-----------------------------------------------------------------
+
+INSERT INTO prompts (key_name, locale, version, description, text, is_active, updated_by)
+VALUES
+('creative_text_negatives', 'ru', 1, 'Минус-слова для отбора трафика',
+'Генерация минус-слов
+Ты — ИИ-агент, задача которого — помочь маркетологу составить список минус-слов для Яндекс.Директ.
+Анализируй только предоставленный текст.
+
+**Контент сайта:**
+{website_text}
+
+Формат ответа — СТРОГО JSON:
+{
+"negatives": {
+"общие": [],
+"бесплатные": [],
+"негатив_и_инфо": [],
+"вакансии": [],
+"конкуренты": [],
+"нерелевант": []
+}
+}', 1, 'system');
+
+
+-----------------------------------------------------------------
+ПРОМПТ НА ГЕНЕРАЦИЮ ТЕКСТОВОГО КРЕАТИВА
+-----------------------------------------------------------------
+
+INSERT INTO prompts (key_name, locale, version, description, text, is_active, updated_by)
+VALUES
+('creative_text_ads', 'ru', 1, 'Рекламные объявления (headline/body/cta)',
+'Ты — ИИ-агент для генерации рекламных объявлений Яндекс.Директ.
+Анализируй текст сайта:
+
+{website_text}
+
+Сформируй СТРОГО JSON-массив из 5 объявлений:
+[
+{
+"id": "AD1",
+"header": "Заголовок ≤56 символов",
+"text": "Текст ≤81 символ, с CTA",
+"links": [
+{"url":"https://...", "title":"≤30", "desc":"≤60"},
+{"url":"https://...", "title":"≤30", "desc":"≤60"}
+],
+"details": ["Уточнение1", "Уточнение2"]
+},
+...
+]
+Соблюдай лимиты. Если данных мало — пропускай поле.', 1, 'system');
+
+
+-----------------------------------------------------------------
+ПРОМПТ НА ГЕНЕРАЦИЮ ГРАФИЧЕСКОГО КРЕАТИВА
+-----------------------------------------------------------------
+
+INSERT INTO prompts (key_name, locale, version, description, text, is_active, updated_by)
+VALUES
+('creative_graphic', 'ru', 1, 'Графические концепции (1–2 идеи + image_prompts)',
+'Твоя роль: арт-директор performance-рекламы.
+Задача: на основе сайта сгенерировать 3 визуальных концепта баннера для РСЯ и выдать готовые промпты для генераторов изображений (Midjourney / Stable Diffusion / DALL·E) + короткий текст (headline/body/cta).
+
+site_url: {site_url}
+goal: {goal}
+audience: {audience}
+geo: {geo}
+offer_constraints: {offer_constraints}
+brand_overrides: {brand_overrides}
+
+Если нет доступа к сайту — используй контент ниже. Если что-то предположил — укажи в "assumptions".
+
+Контент сайта:
+{website_text}
+
+Формат ответа — СТРОГО JSON. Образец структуры:
+
+{
+"brand": {
+"name": "IKEA",
+"extracted_colors_hex": ["#0058A3", "#FFC72C"],
+"style_notes": "минимализм, скандинавский уют",
+"assumptions": "часть информации угадана"
+},
+"concepts": [
+{
+"name": "Семья и уют",
+"rationale": "молодые семьи ищут комфортную мебель",
+"visual_plan": "светлая гостиная, диван, семья из 3 человек",
+"image_prompts": {
+"1x1": "ENGLISH prompt for MJ/SD/DALL·E … --ar 1:1",
+"4x1": "ENGLISH prompt … --ar 4:1 (или 16:9 с указанием обрезки)",
+"1x2": "ENGLISH prompt … --ar 1:2"
+},
+"negatives": "clutter, text, watermark, busy background",
+"generator_params": { "stylize": 100, "chaos": 10, "seed": 12345 }, 
+"ad_copy_ru": {
+"headline": "Мебель для семьи",
+"body": "Уют и стиль для вашего дома",
+"cta": "Выбрать"
+}
+}
+],
+"safety_checklist": [
+"Нет абсолютных обещаний",
+"Нет логотипов реальных брендов",
+"Минимум текста на изображении"
+]
+}
+
+⚠️ Правила:
+- Пиши image-prompts на АНГЛИЙСКОМ (без кавычек, без фигурных скобок).
+- Длина каждого image-prompt ≤ 750 символов.
+- Используй HEX цвета бренда (если нет — подбери гармоничные).
+- Минимум текста на изображении. ', 1, 'system');
+

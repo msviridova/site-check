@@ -1,32 +1,29 @@
+// handler.go
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/openai/openai-go/v2"
 )
 
-// ==== HTTP-обработчик ====
-
 func classifyHandler(w http.ResponseWriter, r *http.Request) {
-	// 1) только POST
 	if r.Method != http.MethodPost {
 		http.Error(w, "use POST", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// 2) читаем JSON
 	var req classifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad JSON", http.StatusBadRequest)
 		return
 	}
 
-	// 3) валидируем URL
 	raw := strings.TrimSpace(req.URL)
 	if raw == "" {
 		http.Error(w, "url is required", http.StatusBadRequest)
@@ -38,18 +35,15 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("useAI=%v url=%s", useAI, u.String())
-
-	// 4) общий таймаут
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 
-	// старт лог-записи API
+	// API log
 	rawReq, _ := json.Marshal(req)
 	apiStart := time.Now()
 	apiID, _ := apiLogStart(ctx, "/classify", u.String(), string(rawReq))
 
-	// 5) скачиваем HTML
+	// ── 1) HTML сайта
 	html, err := fetchHTML(ctx, u.String())
 	if err != nil {
 		http.Error(w, "fetch failed: "+err.Error(), http.StatusBadGateway)
@@ -57,143 +51,138 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- бренд/цвета/стиль (делаем один раз)
-	brand := extractBrand(u, html)
-	palette := extractColorsHex(html)
-	styleNotes := deriveStyleNotes(palette, html)
+	// ── 2) Эвристики
+	brandHeur := extractBrand(u, html)
+	extractedColors := extractColorsHex(html)
+	styleHeur := deriveStyleNotes(extractedColors, html)
 
-	// 6) извлекаем текст
-	text := extractVisibleText(html)
-	log.Printf("extracted text length: %d", len(text))
+	// ── 3) Подготовка текста для промпта
+	siteText := extractVisibleText(html)
+	if len(siteText) > 12000 {
+		siteText = siteText[:12000]
+	}
 
-	// === мало текста: пробуем AI по домену/титлу, иначе фолбэк
-	if len(strings.TrimSpace(text)) < 40 {
-		brief := fallbackSummary(u, html) // title/meta/host
-		if useAI {
-			shortInput := "Домен: " + u.Hostname()
-			if b := strings.TrimSpace(brief); b != "" {
-				shortInput += "\nTitle/Meta: " + b
-			}
-			sum, kws, negs, cols, aiErr := summarizeWithAI(ctx, shortInput)
-			log.Printf("AI (short-text) finished, err=%v", aiErr)
-			if aiErr == nil && strings.TrimSpace(sum) != "" {
-				resp := classifyResponse{
-					Summary:  sum,
-					Lang:     "ru",
-					Source:   "ai",
-					Keywords: kws, NegativeKeywords: negs,
-
-					Brand:      brand,
-					StyleNotes: styleNotes,
-
-					MainColorsHex:       nilIfNilSlice(cols, func(c *AIColors) []string { return c.Main }),
-					AdditionalColorsHex: nilIfNilSlice(cols, func(c *AIColors) []string { return c.Additional }),
-					BackgroundColorHex:  ifCols(cols, func(c *AIColors) string { return c.Background }),
-					AccentPrimaryHex:    ifCols(cols, func(c *AIColors) string { return c.AccentPrimary }),
-					AccentSecondaryHex:  ifCols(cols, func(c *AIColors) string { return c.AccentSecondary }),
-				}
-				w.Header().Set("Content-Type", "application/json; charset=utf-8")
-				_ = json.NewEncoder(w).Encode(resp)
-
-				respJSON, _ := json.Marshal(resp)
-				apiLogFinish(ctx, apiID, http.StatusOK, string(respJSON), "", time.Since(apiStart))
-				return
-			}
-			log.Println("AI short-text failed → fallback to heuristic")
-		}
-
-		// эвристический фолбэк
-		summary := brief
-		if strings.TrimSpace(summary) == "" {
-			summary = "Веб-сайт компании/сервиса " + u.Hostname()
-		}
-		resp := classifyResponse{
-			Summary:    summary,
-			Lang:       "ru",
-			Source:     "heuristic",
-			Brand:      brand,
-			StyleNotes: styleNotes,
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(resp)
-
-		respJSON, _ := json.Marshal(resp)
-		apiLogFinish(ctx, apiID, http.StatusOK, string(respJSON), "", time.Since(apiStart))
+	// ── 4) Промпт из БД (без фолбэка)
+	const promptKey = "classify"
+	p, err := getPrompt(db, promptKey, "ru", 0)
+	if err != nil {
+		http.Error(w, "prompt not found: "+promptKey, http.StatusInternalServerError)
+		apiLogFinish(ctx, apiID, http.StatusInternalServerError, "", "no prompt in DB", time.Since(apiStart))
+		return
+	}
+	prompt := strings.TrimSpace(p.Text)
+	if prompt == "" {
+		http.Error(w, "prompt is empty: "+promptKey, http.StatusInternalServerError)
+		apiLogFinish(ctx, apiID, http.StatusInternalServerError, "", "empty prompt text", time.Since(apiStart))
 		return
 	}
 
-	// === текста достаточно: обычная логика
-	var (
-		summary string
-		source  string
-		kws     []string
-		negs    []string
-		cols    *AIColors
-	)
-	if useAI {
-		source = "ai"
-		sum, kk, nn, cc, aiErr := summarizeWithAI(ctx, text)
-		log.Printf("AI call finished, err=%v", aiErr)
-		if aiErr != nil || strings.TrimSpace(sum) == "" {
-			log.Println("AI failed or empty → fallback to heuristic")
-			summary = heuristicSummarize(text)
-			source = "heuristic"
-		} else {
-			summary, kws, negs, cols = sum, kk, nn, cc
-		}
+	// ── 5) Подстановка плейсхолдеров
+	if styleHeur == "" {
+		styleHeur = "неопределено"
+	}
+	prompt = strings.ReplaceAll(prompt, "{HEUR_BRAND}", brandHeur)
+	prompt = strings.ReplaceAll(prompt, "{HEUR_STYLE}", styleHeur)
+	if len(extractedColors) == 0 {
+		prompt = strings.ReplaceAll(prompt, "{HEUR_COLORS}", "[]")
 	} else {
-		summary = heuristicSummarize(text)
-		source = "heuristic"
+		prompt = strings.ReplaceAll(prompt, "{HEUR_COLORS}", strings.Join(extractedColors, ", "))
+	}
+	prompt = strings.ReplaceAll(prompt, "{SITE_TEXT}", siteText)
+
+	// ── 6) Вызов AI
+	startAI := time.Now()
+	aiID, _ := aiLogStart(ctx, nil, modelName, preview512(prompt))
+
+	respAI, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model: modelName,
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage(prompt),
+		},
+		MaxTokens:   openai.Int(900),
+		Temperature: openai.Float(0.3),
+	})
+	if err != nil {
+		aiLogFinish(ctx, aiID, "", err.Error(), nil, time.Since(startAI))
+		http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
+		apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "ai error", time.Since(apiStart))
+		return
+	}
+	if len(respAI.Choices) == 0 {
+		aiLogFinish(ctx, aiID, "", "no choices from AI", nil, time.Since(startAI))
+		http.Error(w, "AI: no choices", http.StatusBadGateway)
+		apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "AI: no choices", time.Since(apiStart))
+		return
 	}
 
-	// стоп-фолбэк
-	if strings.TrimSpace(summary) == "" {
-		log.Println("summary is empty → using title/meta/host fallback")
-		summary = fallbackSummary(u, html)
-		if strings.TrimSpace(summary) == "" {
-			summary = "Не удалось определить тематику сайта"
+	rawJSON := strings.TrimSpace(respAI.Choices[0].Message.Content)
+	aiLogFinish(ctx, aiID, rawJSON, "", nil, time.Since(startAI))
+
+	// ── 7) Разбор ответа AI → твоя целевая структура
+	type aiOut struct {
+		Summary             string   `json:"summary"`
+		Brand               string   `json:"brand"`
+		StyleNotes          string   `json:"style_notes"`
+		MainColorsHex       []string `json:"main_colors_hex"`
+		AdditionalColorsHex []string `json:"additional_colors_hex"`
+		BackgroundColorHex  string   `json:"background_color_hex"`
+		AccentPrimaryHex    string   `json:"accent_primary_hex"`
+		AccentSecondaryHex  string   `json:"accent_secondary_hex"`
+	}
+	var out aiOut
+	if err := json.Unmarshal([]byte(rawJSON), &out); err != nil {
+		http.Error(w, "AI JSON parse error: "+err.Error(), http.StatusBadGateway)
+		apiLogFinish(ctx, apiID, http.StatusBadGateway, rawJSON, "ai json parse error", time.Since(apiStart))
+		return
+	}
+
+	// ── 8) Чистка/дедуп
+	uniq := func(xs []string) []string {
+		m := make(map[string]struct{}, len(xs))
+		out := make([]string, 0, len(xs))
+		for _, v := range xs {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			if _, ok := m[v]; ok {
+				continue
+			}
+			m[v] = struct{}{}
+			out = append(out, v)
 		}
+		return out
 	}
 
-	// ответ + финал лога
+	finalBrand := strings.TrimSpace(out.Brand)
+	if finalBrand == "" {
+		finalBrand = brandHeur
+	}
+	finalStyle := strings.TrimSpace(out.StyleNotes)
+	if finalStyle == "" {
+		finalStyle = styleHeur
+	}
+
 	resp := classifyResponse{
-		Summary:  summary,
-		Lang:     "ru",
-		Source:   source,
-		Keywords: kws, NegativeKeywords: negs,
-
-		Brand:      brand,
-		StyleNotes: styleNotes,
-
-		MainColorsHex:       nilIfNilSlice(cols, func(c *AIColors) []string { return c.Main }),
-		AdditionalColorsHex: nilIfNilSlice(cols, func(c *AIColors) []string { return c.Additional }),
-		BackgroundColorHex:  ifCols(cols, func(c *AIColors) string { return c.Background }),
-		AccentPrimaryHex:    ifCols(cols, func(c *AIColors) string { return c.AccentPrimary }),
-		AccentSecondaryHex:  ifCols(cols, func(c *AIColors) string { return c.AccentSecondary }),
+		Summary:             strings.TrimSpace(out.Summary),
+		Lang:                "ru",
+		Source:              "ai",
+		Brand:               finalBrand,
+		StyleNotes:          finalStyle,
+		MainColorsHex:       uniq(out.MainColorsHex),
+		AdditionalColorsHex: uniq(out.AdditionalColorsHex),
+		BackgroundColorHex:  strings.TrimSpace(out.BackgroundColorHex),
+		AccentPrimaryHex:    strings.TrimSpace(out.AccentPrimaryHex),
+		AccentSecondaryHex:  strings.TrimSpace(out.AccentSecondaryHex),
 	}
+	if len(resp.MainColorsHex) == 0 {
+		resp.MainColorsHex = extractedColors // подстрахуемся палитрой из HTML
+	}
+	if resp.Summary == "" {
+		resp.Summary = "Описание сайта недоступно."
+	}
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(resp)
-
-	respJSON, _ := json.Marshal(resp)
-	apiLogFinish(ctx, apiID, http.StatusOK, string(respJSON), "", time.Since(apiStart))
-}
-
-// безопасные «мостики» чтобы не натыкаться на nil
-func ifCols[T any](c *AIColors, get func(*AIColors) T) T {
-	var zero T
-	if c == nil {
-		return zero
-	}
-	return get(c)
-}
-
-func nilIfNilSlice[T any](c *AIColors, get func(*AIColors) []T) []T {
-	if c == nil {
-		return nil
-	}
-	v := get(c)
-	if len(v) == 0 {
-		return nil
-	}
-	return v
+	apiLogFinish(ctx, apiID, http.StatusOK, rawJSON, "", time.Since(apiStart))
 }
