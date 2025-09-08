@@ -122,3 +122,32 @@ func getPrompt(db *sql.DB, key string, locale string, version int) (*Prompt, err
 
 	return &p, nil
 }
+
+// getAllPrompts возвращает список всех активных промптов
+func getAllPrompts(db *sql.DB) ([]Prompt, error) {
+	q := `
+        SELECT id, key_name, locale, version, description, text, is_active, updated_by, updated_at
+        FROM prompts
+        WHERE is_active = 1
+        ORDER BY key_name, locale, version DESC`
+
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var prompts []Prompt
+	for rows.Next() {
+		var p Prompt
+		if err := rows.Scan(
+			&p.ID, &p.KeyName, &p.Locale, &p.Version, &p.Description,
+			&p.Text, &p.IsActive, &p.UpdatedBy, &p.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		prompts = append(prompts, p)
+	}
+
+	return prompts, rows.Err()
+}
