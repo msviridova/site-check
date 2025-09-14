@@ -58,6 +58,7 @@ func main() {
 	mux.HandleFunc("/image", imageHandler) // <— вот это обязательно
 	mux.HandleFunc("/prompts", promptHandler)
 	mux.HandleFunc("/prompts/list", promptListHandler)
+	mux.HandleFunc("/logs/recent", logsHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

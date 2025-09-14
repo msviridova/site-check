@@ -3,12 +3,52 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/openai/openai-go/v2"
 )
+
+// ---- лёгкий кэш для текстов промптов (по ключу/локали/версии) ----
+
+var promptCache = struct {
+	mu sync.RWMutex
+	m  map[string]*Prompt
+}{m: make(map[string]*Prompt)}
+
+func promptCacheKey(key, locale string, version int) string {
+	return key + "||" + locale + "||" + strconv.Itoa(version)
+}
+
+func getPromptCached(db *sql.DB, key, locale string, version int) (*Prompt, error) {
+	k := promptCacheKey(key, locale, version)
+
+	// fast path: из памяти
+	promptCache.mu.RLock()
+	if p, ok := promptCache.m[k]; ok && p != nil {
+		promptCache.mu.RUnlock()
+		return p, nil
+	}
+	promptCache.mu.RUnlock()
+
+	// медленно: из БД
+	p, err := getPrompt(db, key, locale, version)
+	if err != nil {
+		return nil, err
+	}
+
+	// сохранить в память
+	promptCache.mu.Lock()
+	promptCache.m[k] = p
+	promptCache.mu.Unlock()
+
+	return p, nil
+}
 
 // ====== ТЕКСТОВЫЕ КРЕАТИВЫ ======
 
@@ -217,39 +257,71 @@ func generateAds(ctx context.Context, siteText string) ([]AdBlock, error) {
 // Поддержанные плейсхолдеры в тексте промпта:
 // {website_text}, {site_url}, {goal}, {audience}, {geo}, {offer_constraints}, {brand_overrides}
 func generateGraphic(ctx context.Context, siteURL, siteText string, opts GraphicInputOpts) (*GraphicPlan, error) {
-	const promptKey = "creative_graphic"
+	const (
+		promptKey   = "creative_graphic"
+		locale      = "ru"
+		version     = 0    // 0 = взять актуальную активную версию
+		maxSiteText = 8000 // жёсткая подрезка, чтобы не раздувать запрос
+		callTimeout = 25 * time.Second
+	)
 
-	p, err := getPrompt(db, promptKey, "ru", 0)
+	// 1) забираем и кэшируем шаблон промпта
+	p, err := getPromptCached(db, promptKey, locale, version)
 	if err != nil {
 		return nil, errors.New("prompt not found: " + promptKey)
 	}
 
-	pp := p.Text
-	pp = strings.ReplaceAll(pp, "{website_text}", siteText)
-	pp = strings.ReplaceAll(pp, "{site_url}", siteURL)
-	pp = strings.ReplaceAll(pp, "{goal}", nz(opts.Goal))
-	pp = strings.ReplaceAll(pp, "{audience}", nz(opts.Audience))
-	pp = strings.ReplaceAll(pp, "{geo}", nz(opts.Geo))
-	pp = strings.ReplaceAll(pp, "{offer_constraints}", nz(opts.OfferConstraints))
-	pp = strings.ReplaceAll(pp, "{brand_overrides}", nz(opts.BrandOverrides))
+	// 2) нормализация входа
+	siteText = strings.TrimSpace(siteText)
+	if siteText == "" {
+		return nil, errors.New("empty website_text")
+	}
+	if len(siteText) > maxSiteText {
+		siteText = siteText[:maxSiteText]
+	}
+	siteURL = strings.TrimSpace(siteURL)
 
-	resp, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	// 3) подстановка плейсхолдеров
+	pp := p.Text
+	repl := func(s string) string { return strings.TrimSpace(s) }
+	pp = strings.ReplaceAll(pp, "{website_text}", repl(siteText))
+	pp = strings.ReplaceAll(pp, "{site_url}", repl(siteURL))
+	pp = strings.ReplaceAll(pp, "{goal}", repl(opts.Goal))
+	pp = strings.ReplaceAll(pp, "{audience}", repl(opts.Audience))
+	pp = strings.ReplaceAll(pp, "{geo}", repl(opts.Geo))
+	pp = strings.ReplaceAll(pp, "{offer_constraints}", repl(opts.OfferConstraints))
+	pp = strings.ReplaceAll(pp, "{brand_overrides}", repl(opts.BrandOverrides))
+
+	// 4) отдельный таймаут на вызов модели (не обязателен, но полезен)
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+
+	// (опционально) логируем вызов в ai_logs
+	start := time.Now()
+	aiID, _ := aiLogStart(cctx, nil, modelName, preview512(pp))
+
+	resp, err := aiClient.Chat.Completions.New(cctx, openai.ChatCompletionNewParams{
 		Model: modelName,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(pp),
 		},
-		MaxTokens:   openai.Int(2000),
-		Temperature: openai.Float(0.5),
+		// токены пониже, чтобы ответ приходил быстрее, но JSON влезал
+		MaxTokens:   openai.Int(1300),
+		Temperature: openai.Float(0.45),
 	})
 	if err != nil {
+		aiLogFinish(cctx, aiID, "", err.Error(), nil, time.Since(start))
 		return nil, err
 	}
 	if len(resp.Choices) == 0 {
+		aiLogFinish(cctx, aiID, "", "no choices from AI", nil, time.Since(start))
 		return nil, errors.New("no choices from AI")
 	}
 
 	raw := strings.TrimSpace(resp.Choices[0].Message.Content)
+	aiLogFinish(cctx, aiID, raw, "", nil, time.Since(start))
 
+	// 5) парсим JSON-план
 	var gp GraphicPlan
 	if err := json.Unmarshal([]byte(raw), &gp); err != nil {
 		return nil, err
