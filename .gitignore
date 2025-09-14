@@ -31,3 +31,4 @@ Thumbs.db
 
 # Вендоринг (если не используешь vendor)
 vendor/
+site-check
