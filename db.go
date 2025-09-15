@@ -1,3 +1,4 @@
+// db.go
 package main
 
 import (
@@ -31,8 +32,12 @@ func mustOpenDB() *sql.DB {
 	return d
 }
 
+// ====== IDs для логов ======
+
 type APILogID int64
 type AILogID int64
+
+// ====== API-логи ======
 
 func apiLogStart(ctx context.Context, route, urlStr, reqBody string) (APILogID, error) {
 	res, err := db.ExecContext(ctx,
@@ -58,6 +63,8 @@ func apiLogFinish(ctx context.Context, id APILogID, status int, respBody string,
 	}
 }
 
+// ====== AI-логи ======
+
 func aiLogStart(ctx context.Context, apiID *APILogID, model, promptPreview string) (AILogID, error) {
 	var apiRef interface{} = nil
 	if apiID != nil && *apiID > 0 {
@@ -74,8 +81,8 @@ func aiLogStart(ctx context.Context, apiID *APILogID, model, promptPreview strin
 	return AILogID(id), nil
 }
 
+// CompletionUsageLike определяется в ai.go
 func aiLogFinish(ctx context.Context, id AILogID, respBody, errText string, usage *CompletionUsageLike, dur time.Duration) {
-	// usage совместимая «прокладка», см. ниже в ai.go
 	var pt, ct, tt interface{} = nil, nil, nil
 	if usage != nil {
 		pt = usage.PromptTokens
@@ -93,12 +100,18 @@ func aiLogFinish(ctx context.Context, id AILogID, respBody, errText string, usag
 	}
 }
 
+// ====== Вспомогательные ======
+
 func nullIfEmpty(s string) interface{} {
 	if strings.TrimSpace(s) == "" {
 		return nil
 	}
 	return s
 }
+
+// ====== PROMPTS ======
+//
+// Тип Prompt объявлен в types.go
 
 func getPrompt(db *sql.DB, key string, locale string, version int) (*Prompt, error) {
 	q := `
@@ -109,7 +122,6 @@ func getPrompt(db *sql.DB, key string, locale string, version int) (*Prompt, err
           AND is_active = 1
         ORDER BY version DESC
         LIMIT 1`
-
 	row := db.QueryRow(q, key, locale, version, version)
 
 	var p Prompt
@@ -119,18 +131,15 @@ func getPrompt(db *sql.DB, key string, locale string, version int) (*Prompt, err
 	); err != nil {
 		return nil, err
 	}
-
 	return &p, nil
 }
 
-// getAllPrompts возвращает список всех активных промптов
 func getAllPrompts(db *sql.DB) ([]Prompt, error) {
 	q := `
         SELECT id, key_name, locale, version, description, text, is_active, updated_by, updated_at
         FROM prompts
         WHERE is_active = 1
         ORDER BY key_name, locale, version DESC`
-
 	rows, err := db.Query(q)
 	if err != nil {
 		return nil, err
@@ -148,6 +157,68 @@ func getAllPrompts(db *sql.DB) ([]Prompt, error) {
 		}
 		prompts = append(prompts, p)
 	}
-
 	return prompts, rows.Err()
+}
+
+type APILogRow struct {
+	ID         int64     `json:"id"`
+	Route      string    `json:"route"`
+	URL        string    `json:"url"`
+	StatusCode *int      `json:"status_code,omitempty"`
+	ErrorText  *string   `json:"error_text,omitempty"`
+	DurationMS *int      `json:"duration_ms,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type AILogRow struct {
+	ID            int64     `json:"id"`
+	Model         string    `json:"model"`
+	PromptPreview string    `json:"prompt_preview"`
+	ErrorText     *string   `json:"error_text,omitempty"`
+	TotalTokens   *int      `json:"total_tokens,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+func getRecentAPILogs(ctx context.Context) ([]APILogRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, route, url, status_code, error_text, duration_ms, created_at
+		FROM api_logs
+		ORDER BY id DESC
+		LIMIT 50`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []APILogRow
+	for rows.Next() {
+		var r APILogRow
+		if err := rows.Scan(&r.ID, &r.Route, &r.URL, &r.StatusCode, &r.ErrorText, &r.DurationMS, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func getRecentAILogs(ctx context.Context) ([]AILogRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, model, prompt_preview, error_text, total_tokens, created_at
+		FROM ai_logs
+		ORDER BY id DESC
+		LIMIT 50`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AILogRow
+	for rows.Next() {
+		var r AILogRow
+		if err := rows.Scan(&r.ID, &r.Model, &r.PromptPreview, &r.ErrorText, &r.TotalTokens, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
