@@ -292,11 +292,11 @@ func generateGraphic(ctx context.Context, siteURL, siteText string, opts Graphic
 	pp = strings.ReplaceAll(pp, "{offer_constraints}", repl(opts.OfferConstraints))
 	pp = strings.ReplaceAll(pp, "{brand_overrides}", repl(opts.BrandOverrides))
 
-	// 4) отдельный таймаут на вызов модели (не обязателен, но полезен)
+	// 4) отдельный таймаут на вызов модели
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 
-	// (опционально) логируем вызов в ai_logs
+	// лог вызова
 	start := time.Now()
 	aiID, _ := aiLogStart(cctx, nil, modelName, preview512(pp))
 
@@ -305,9 +305,8 @@ func generateGraphic(ctx context.Context, siteURL, siteText string, opts Graphic
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(pp),
 		},
-		// токены пониже, чтобы ответ приходил быстрее, но JSON влезал
-		MaxTokens:   openai.Int(1300),
-		Temperature: openai.Float(0.45),
+		MaxTokens:   openai.Int(1300),   // чуть ниже, чтобы отвечало быстрее
+		Temperature: openai.Float(0.45), // умеренная креативность
 	})
 	if err != nil {
 		aiLogFinish(cctx, aiID, "", err.Error(), nil, time.Since(start))

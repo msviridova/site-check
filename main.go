@@ -63,6 +63,10 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	fs := http.FileServer(http.Dir("./static"))
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
+
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,

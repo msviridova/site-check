@@ -1,6 +1,6 @@
 module github.com/sanmarri/site-check
 
-go 1.23
+go 1.24.0
 
 toolchain go1.24.5
 
@@ -8,6 +8,7 @@ require (
 	github.com/PuerkitoBio/goquery v1.10.2
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/openai/openai-go/v2 v2.0.0
+	golang.org/x/image v0.31.0
 )
 
 require (
