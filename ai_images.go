@@ -12,6 +12,7 @@ import (
 
 // --- helpers ---
 
+// preview512 обрезает длинный prompt для логов до 512 символов.
 func preview512(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) > 512 {
@@ -26,14 +27,14 @@ func preview512(s string) string {
 func ratioToSize(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
 	switch s {
-	case "1:1", "1x1":
+	case "1:1", "1x1", "square":
 		return "1024x1024"
 	case "3:2", "4:3", "landscape":
-		return "1536x1024" // горизонталь
+		return "1536x1024"
 	case "2:3", "3:4", "portrait":
-		return "1024x1536" // вертикаль
+		return "1024x1536"
 	case "auto":
-		return "1024x1024"
+		return "auto" // если хочешь доверить выбор серверу
 	default:
 		if strings.Contains(s, "x") {
 			return s
@@ -52,7 +53,8 @@ func toImgSize(s string) openai.ImageGenerateParamsSize {
 	case "1536x1024":
 		return openai.ImageGenerateParamsSize1536x1024
 	default:
-		return openai.ImageGenerateParamsSize1024x1024
+		// безопасный быстрый дефолт
+		return openai.ImageGenerateParamsSize512x512
 	}
 }
 
@@ -84,8 +86,11 @@ func generateImage(ctx context.Context, prompt, size, responseFormat string) (st
 		Model:  "gpt-image-1",
 		Prompt: prompt,
 		Size:   toImgSize(size),
+		// Если хочешь принудительно url/b64 — см. ниже
 	}
 
+	// В openai-go/v2 формат выбирается на уровне чтения ответа:
+	// библиотека возвращает и URL, и b64, если доступны.
 	resp, err := aiClient.Images.Generate(ctx, params)
 	if err != nil {
 		aiLogFinish(ctx, aiID, "", err.Error(), nil, time.Since(start))
@@ -97,16 +102,19 @@ func generateImage(ctx context.Context, prompt, size, responseFormat string) (st
 		return "", errors.New("empty image response: no data")
 	}
 
+	// Пытаемся отдать то, что просили
 	b64 := strings.TrimSpace(resp.Data[0].B64JSON)
 	url := strings.TrimSpace(resp.Data[0].URL)
 
-	if strings.ToLower(responseFormat) == "b64_json" {
+	// Если явно просят base64
+	if strings.EqualFold(responseFormat, "b64_json") {
 		if b64 == "" {
 			return "", errors.New("image API returned empty b64_json")
 		}
 		return b64, nil
 	}
 
+	// По умолчанию — URL (быстрее для клиента)
 	if url != "" {
 		return url, nil
 	}

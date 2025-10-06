@@ -9,56 +9,76 @@ import (
 	"time"
 )
 
+// локальный ответ (чтобы не лезть в types.go)
+type creativeResponse struct {
+	Kind    string       `json:"kind"`
+	Lang    string       `json:"lang"`
+	Source  string       `json:"source"`
+	Graphic *GraphicPlan `json:"graphic,omitempty"`
+	// если позже захочешь вернуть текстовые креативы — добавишь сюда поля из types.go
+}
+
 func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "use POST", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// читаем JSON
 	var req CreativeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad JSON", http.StatusBadRequest)
+		http.Error(w, "bad JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	_ = r.Body.Close()
 
-	// ОБЯЗАТЕЛЕН уже извлечённый текст сайта (мы сайт НЕ скачиваем)
-	siteText := strings.TrimSpace(req.SiteText)
-	if siteText == "" {
-		http.Error(w, "site_text is required", http.StatusBadRequest)
-		return
+	// значения по умолчанию
+	req.Kind = strings.TrimSpace(req.Kind)
+	if req.Kind == "" {
+		req.Kind = "graphic"
 	}
+	lang := "ru"
 
-	// общий таймаут на обращение к AI
+	// общий таймаут на работу с AI
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	var resp CreativeResponse
-	resp.Kind = req.Kind
-	resp.Lang = "ru"
-	resp.Source = "ai"
+	// готовим ответ-заготовку
+	resp := creativeResponse{
+		Kind:   req.Kind,
+		Lang:   lang,
+		Source: "ai",
+	}
 
-	// если глобально выключен AI — сразу 503
+	// если глобально выключен AI — сразу 503 (поведение как в твоей версии)
 	if !useAI {
 		resp.Source = "ai_error"
 		http.Error(w, "AI disabled", http.StatusServiceUnavailable)
 		return
 	}
 
-	switch strings.ToLower(req.Kind) {
-
-	case "text":
-		// Генерируем все типы текстовых креативов за один запрос
-		textCreatives, err := generateAllTextCreatives(ctx, siteText)
+	// соберём siteText: приоритет у site_text; если его нет — попробуем подтянуть по URL
+	siteText := sanitizeSiteText(req.SiteText, 10000)
+	if siteText == "" && strings.TrimSpace(req.SiteURL) != "" {
+		// тянем HTML и извлекаем видимый текст штатными функциями fetch.go
+		html, err := fetchHTML(ctx, req.SiteURL)
 		if err != nil {
-			resp.Source = "ai_error"
-			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
+			http.Error(w, "fetch error: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		resp.Keywords = textCreatives.Keywords
-		resp.Negatives = textCreatives.Negatives
-		resp.Ads = textCreatives.Ads
+		siteText = extractVisibleText(html)
+		siteText = sanitizeSiteText(siteText, 10000)
+	}
+
+	if siteText == "" {
+		http.Error(w, "site_text is required", http.StatusBadRequest)
+		return
+	}
+
+	switch strings.ToLower(req.Kind) {
 
 	case "graphic":
+		// собираем опции для графики из тела запроса
 		opts := GraphicInputOpts{
 			Goal:             req.Goal,
 			Audience:         req.Audience,
@@ -66,7 +86,8 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 			OfferConstraints: req.OfferConstraints,
 			BrandOverrides:   req.BrandOverrides,
 		}
-		gp, err := generateGraphic(ctx, strings.TrimSpace(req.SiteURL), siteText, opts)
+
+		gp, err := generateGraphic(ctx, req.SiteURL, siteText, opts)
 		if err != nil {
 			resp.Source = "ai_error"
 			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
@@ -81,4 +102,22 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// --- утилита очистки текста (мягкая версия) ---
+func sanitizeSiteText(s string, max int) string {
+	s = strings.ReplaceAll(s, "\uFEFF", "")
+	s = strings.ReplaceAll(s, "\u00A0", " ")
+	s = strings.TrimSpace(s)
+	// уберём возможные кодовые блоки и хвосты
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	s = strings.TrimSuffix(s, "…")
+	// схлопнём пробелы
+	s = strings.Join(strings.Fields(s), " ")
+	if max > 0 && len(s) > max {
+		return s[:max]
+	}
+	return s
 }
