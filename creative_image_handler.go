@@ -93,11 +93,15 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2) сохраняем в ./static и получаем короткий URL
-	publicURL, err := materializeImageToStatic(r.Context(), result)
-	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "save image: "+err.Error())
-		return
-	}
+	// ВРЕМЕННО ОТКЛЮЧЕНО: сохранение на диск из-за проблем с правами доступа
+	// publicURL, err := materializeImageToStatic(r.Context(), result)
+	// if err != nil {
+	// 	writeJSONError(w, http.StatusBadGateway, "save image: "+err.Error())
+	// 	return
+	// }
+	
+	// Используем оригинальный URL от OpenAI вместо локального сохранения
+	publicURL := result
 
 	// 3) опционально открываем в браузере на машине, где крутится сервер
 	if in.AutoOpen {
