@@ -15,7 +15,11 @@ type creativeResponse struct {
 	Lang    string       `json:"lang"`
 	Source  string       `json:"source"`
 	Graphic *GraphicPlan `json:"graphic,omitempty"`
-	// если позже захочешь вернуть текстовые креативы — добавишь сюда поля из types.go
+
+	// Для текстовых креативов (все типы сразу)
+	Keywords  []string  `json:"keywords,omitempty"`
+	Negatives []string  `json:"negatives,omitempty"`
+	Ads       []AdBlock `json:"ads,omitempty"`
 }
 
 func creativeHandler(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +80,18 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch strings.ToLower(req.Kind) {
+
+	case "text":
+		// генерируем все типы текстовых креативов сразу
+		textCreatives, err := generateAllTextCreatives(ctx, siteText)
+		if err != nil {
+			resp.Source = "ai_error"
+			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		resp.Keywords = textCreatives.Keywords
+		resp.Negatives = textCreatives.Negatives
+		resp.Ads = textCreatives.Ads
 
 	case "graphic":
 		// собираем опции для графики из тела запроса
