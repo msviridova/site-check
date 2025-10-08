@@ -44,7 +44,7 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	lang := "ru"
 
 	// общий таймаут на работу с AI
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
 	// готовим ответ-заготовку

@@ -262,7 +262,7 @@ func generateGraphic(ctx context.Context, siteURL, siteText string, opts Graphic
 		locale      = "ru"
 		version     = 0    // 0 = взять актуальную активную версию
 		maxSiteText = 8000 // жёсткая подрезка, чтобы не раздувать запрос
-		callTimeout = 25 * time.Second
+		callTimeout = 120 * time.Second
 	)
 
 	// 1) забираем и кэшируем шаблон промпта
