@@ -47,6 +47,11 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
+	// ▶ START API LOG
+	rawReq, _ := json.Marshal(req)
+	apiStart := time.Now()
+	apiID, _ := apiLogStart(ctx, "/creative", strings.TrimSpace(req.SiteURL), string(rawReq))
+
 	// готовим ответ-заготовку
 	resp := creativeResponse{
 		Kind:   req.Kind,
@@ -58,6 +63,7 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	if !useAI {
 		resp.Source = "ai_error"
 		http.Error(w, "AI disabled", http.StatusServiceUnavailable)
+		apiLogFinish(ctx, apiID, http.StatusServiceUnavailable, "", "ai disabled", time.Since(apiStart))
 		return
 	}
 
@@ -68,6 +74,7 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 		html, err := fetchHTML(ctx, req.SiteURL)
 		if err != nil {
 			http.Error(w, "fetch error: "+err.Error(), http.StatusBadGateway)
+			apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "fetch error: "+err.Error(), time.Since(apiStart))
 			return
 		}
 		siteText = extractVisibleText(html)
@@ -76,6 +83,7 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 
 	if siteText == "" {
 		http.Error(w, "site_text is required", http.StatusBadRequest)
+		apiLogFinish(ctx, apiID, http.StatusBadRequest, "", "site_text is required", time.Since(apiStart))
 		return
 	}
 
@@ -87,6 +95,7 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			resp.Source = "ai_error"
 			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
+			apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "ai error: "+err.Error(), time.Since(apiStart))
 			return
 		}
 		resp.Keywords = textCreatives.Keywords
@@ -107,17 +116,22 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			resp.Source = "ai_error"
 			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
+			apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "ai error: "+err.Error(), time.Since(apiStart))
 			return
 		}
 		resp.Graphic = gp
 
 	default:
 		http.Error(w, "kind must be: text | graphic", http.StatusBadRequest)
+		apiLogFinish(ctx, apiID, http.StatusBadRequest, "", "bad kind", time.Since(apiStart))
 		return
 	}
 
+	// ▶ FINISH API LOG (200 + тело ответа)
+	rawResp, _ := json.Marshal(resp)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(resp)
+	_, _ = w.Write(rawResp)
+	apiLogFinish(ctx, apiID, http.StatusOK, string(rawResp), "", time.Since(apiStart))
 }
 
 // --- утилита очистки текста (мягкая версия) ---

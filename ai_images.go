@@ -44,23 +44,28 @@ func ratioToSize(s string) string {
 }
 
 // Конвертация строкового размера в enum SDK.
-func toImgSize(s string) openai.ImageGenerateParamsSize {
-	switch strings.TrimSpace(s) {
-	case "1024x1024":
-		return openai.ImageGenerateParamsSize1024x1024
-	case "1024x1536":
-		return openai.ImageGenerateParamsSize1024x1536
-	case "1536x1024":
-		return openai.ImageGenerateParamsSize1536x1024
+func toImgSize(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	switch s {
+	case "", "auto":
+		return "auto"
+	case "1:1", "square", "1024x1024":
+		return "1024x1024"
+	case "portrait", "2:3", "3:4", "1024x1536":
+		return "1024x1536"
+	case "landscape", "3:2", "4:3", "1536x1024":
+		return "1536x1024"
 	default:
-		// безопасный быстрый дефолт
-		return openai.ImageGenerateParamsSize512x512
+		if s == "1024x1024" || s == "1024x1536" || s == "1536x1024" {
+			return s
+		}
+		return "auto"
 	}
 }
 
 // --- main ---
 //
-// generateImage генерирует одну картинку через gpt-image-1.
+// generateImage генерирует одну картинку через gpt-image-1-mini
 // size может быть ratio ("1:1","3:2","2:3") или валидное "1024x1536".
 // responseFormat: "url" | "b64_json".
 func generateImage(ctx context.Context, prompt, size, responseFormat string) (string, error) {
@@ -80,12 +85,12 @@ func generateImage(ctx context.Context, prompt, size, responseFormat string) (st
 
 	// Лог вызова
 	start := time.Now()
-	aiID, _ := aiLogStart(ctx, nil, "gpt-image-1", preview512(prompt))
+	aiID, _ := aiLogStart(ctx, nil, "gpt-image-1-mini", preview512(prompt))
 
 	params := openai.ImageGenerateParams{
-		Model:  "gpt-image-1",
+		Model:  openai.ImageModel("gpt-image-1-mini"),
 		Prompt: prompt,
-		Size:   toImgSize(size),
+		Size:   openai.ImageGenerateParamsSize(toImgSize(size)),
 		// Если хочешь принудительно url/b64 — см. ниже
 	}
 
