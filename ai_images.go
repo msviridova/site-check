@@ -68,7 +68,7 @@ func toImgSize(s string) string {
 // generateImage генерирует одну картинку через gpt-image-1-mini
 // size может быть ratio ("1:1","3:2","2:3") или валидное "1024x1536".
 // responseFormat: "url" | "b64_json".
-func generateImage(ctx context.Context, prompt, size, responseFormat string) (string, error) {
+func (app *App) generateImage(ctx context.Context, prompt, size, responseFormat string) (string, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return "", errors.New("empty prompt")
@@ -85,7 +85,17 @@ func generateImage(ctx context.Context, prompt, size, responseFormat string) (st
 
 	// Лог вызова
 	start := time.Now()
-	aiID, _ := aiLogStart(ctx, nil, "gpt-image-1-mini", preview512(prompt))
+	var aiID AILogID
+	if app.Store != nil {
+		var startErr error
+		aiID, startErr = app.Store.CreateAILog(ctx, nil, "gpt-image-1-mini", preview512(prompt))
+		if startErr != nil {
+			logWarn("image aiLogStart failed", map[string]interface{}{"error": startErr.Error()})
+			aiID = 0
+		}
+	} else {
+		logWarn("store not initialized — image log disabled", map[string]interface{}{"route": "/image"})
+	}
 
 	params := openai.ImageGenerateParams{
 		Model:  openai.ImageModel("gpt-image-1-mini"),
@@ -96,12 +106,18 @@ func generateImage(ctx context.Context, prompt, size, responseFormat string) (st
 
 	// В openai-go/v2 формат выбирается на уровне чтения ответа:
 	// библиотека возвращает и URL, и b64, если доступны.
-	resp, err := aiClient.Images.Generate(ctx, params)
+	resp, err := app.Config.AIClient.Images.Generate(ctx, params)
 	if err != nil {
-		aiLogFinish(ctx, aiID, "", err.Error(), nil, time.Since(start))
+		if app.Store != nil && aiID != 0 {
+			_ = app.Store.UpdateAILog(ctx, aiID, "", err.Error(), nil, time.Since(start))
+		}
 		return "", err
 	}
-	aiLogFinish(ctx, aiID, "", "", nil, time.Since(start))
+	if app.Store != nil && aiID != 0 {
+		if err := app.Store.UpdateAILog(ctx, aiID, "", "", nil, time.Since(start)); err != nil {
+			logWarn("image aiLogFinish failed", map[string]interface{}{"error": err.Error()})
+		}
+	}
 
 	if len(resp.Data) == 0 {
 		return "", errors.New("empty image response: no data")

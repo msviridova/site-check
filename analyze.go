@@ -3,8 +3,10 @@ package main
 import (
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -49,7 +51,7 @@ func extractBrand(u *url.URL, html string) string {
 	}
 	seg := strings.Split(host, ".")
 	if len(seg) >= 2 {
-		return strings.Title(seg[len(seg)-2]) // второй уровень домена
+		return titleSegment(seg[len(seg)-2])
 	}
 	return host
 }
@@ -102,14 +104,9 @@ func extractColorsHex(html string) []string {
 	for k, v := range cnt {
 		arr = append(arr, kv{k, v})
 	}
-	// простая сортировка по частоте (пузырьком не надо — хватит selection)
-	for i := 0; i < len(arr); i++ {
-		for j := i + 1; j < len(arr); j++ {
-			if arr[j].v > arr[i].v {
-				arr[i], arr[j] = arr[j], arr[i]
-			}
-		}
-	}
+	sort.Slice(arr, func(i, j int) bool {
+		return arr[i].v > arr[j].v
+	})
 
 	limit := 3
 	if len(arr) < limit {
@@ -199,4 +196,15 @@ func deriveStyleNotes(colors []string, html string) string {
 		notes = append(notes, "приглушённые тона")
 	}
 	return strings.Join(notes, ", ")
+}
+
+func titleSegment(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	lower := strings.ToLower(s)
+	runes := []rune(lower)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }

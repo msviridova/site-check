@@ -1,77 +1,48 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"net/http"
-	"os"
 	"strings"
-	"time"
-
-	"github.com/openai/openai-go/v2"
-	"github.com/openai/openai-go/v2/option"
 )
-
-// ==== глобальные настройки ====
-
-var (
-	// переключатель использования AI
-	useAI = strings.ToLower(os.Getenv("USE_AI")) == "true"
-
-	// модель — можно вынести в ENV при желании
-	modelName = "gpt-4.1"
-
-	// общий http‑клиент
-	httpClient = &http.Client{Timeout: 10 * time.Second}
-)
-
-// maskKey маскирует API‑ключ для логов
-func maskKey(s string) string {
-	if len(s) <= 8 {
-		return s
-	}
-	return s[:4] + "…" + s[len(s)-4:]
-}
-
-func getEnv(k string) string { return strings.TrimSpace(os.Getenv(k)) }
 
 func main() {
-	// ИНИЦИАЛИЗАЦИЯ глобального aiClient (ОБЯЗАТЕЛЬНО: в ai.go должно быть `var aiClient *openai.Client`)
-	aiClient = openai.NewClient(option.WithAPIKey(strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))))
-
-	// Логи окружения
-	if getEnv("OPENAI_API_KEY") == "" {
-		log.Println("WARN: OPENAI_API_KEY is empty — AI will fallback to heuristic")
-	} else {
-		log.Printf("INFO: OPENAI_API_KEY detected (len=%d)\n", len(getEnv("OPENAI_API_KEY")))
+	// Инициализация приложения
+	app, err := NewApp()
+	if err != nil {
+		log.Fatal("Failed to initialize app:", err)
 	}
-	log.Printf("BOOT: USE_AI=%v MODEL=%s KEY_SET=%t KEY=%s",
-		useAI, modelName, getEnv("OPENAI_API_KEY") != "", maskKey(getEnv("OPENAI_API_KEY")))
-
-	// БД
-	db = mustOpenDB()
-	defer db.Close()
+	defer app.Close()
 
 	// Маршруты
 	mux := http.NewServeMux()
-	mux.HandleFunc("/classify", classifyHandler)
-	mux.HandleFunc("/creative", creativeHandler)
-	mux.HandleFunc("/image", imageHandler) // <— вот это обязательно
-	mux.HandleFunc("/prompts", promptHandler)
-	mux.HandleFunc("/prompts/list", promptListHandler)
-	mux.HandleFunc("/logs/recent", logsHandler)
+	mux.HandleFunc("/classify", app.classifyHandler)
+	mux.HandleFunc("/creative", app.creativeHandler)
+	mux.HandleFunc("/image", app.imageHandler)
+	mux.HandleFunc("/prompts", app.promptHandler)
+	mux.HandleFunc("/prompts/update", app.promptUpdateHandler)
+	mux.HandleFunc("/prompts/list", app.promptListHandler)
+	mux.HandleFunc("/logs/recent", app.logsHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	fs := http.FileServer(http.Dir("./static"))
-	http.Handle("/static/", http.StripPrefix("/static/", fs))
+	if dir := strings.TrimSpace(app.Config.StaticDir); dir != "" {
+		fs := http.FileServer(http.Dir(dir))
+		mux.Handle("/static/", http.StripPrefix("/static/", fs))
+	}
 
 	srv := &http.Server{
-		Addr:              ":8080",
+		Addr:              app.Config.ListenAddr,
 		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: app.Config.ServerReadHeaderTimeout,
 	}
-	log.Println("listening on :8080")
-	log.Fatal(srv.ListenAndServe())
+
+	logInfo("server starting", map[string]interface{}{"addr": app.Config.ListenAddr})
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logError("server shutdown", map[string]interface{}{"error": err.Error()})
+		log.Fatal(err)
+	}
 }

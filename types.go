@@ -1,6 +1,11 @@
 package main
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+const DefaultImageAdditional = "не используй флаги стран, лица реальных людей, изображения 18+"
 
 // ====== запрос для /creative ======
 type CreativeRequest struct {
@@ -167,4 +172,20 @@ type PromptResponse struct {
 	Locale  string `json:"locale"`
 	Version int    `json:"version"`
 	Text    string `json:"text"`
+}
+
+type ImageTemplate struct {
+	Concept    json.RawMessage `json:"concept"`
+	Additional string          `json:"additional,omitempty"`
+	Size       string          `json:"size,omitempty"`
+}
+
+type PromptUpdateRequest struct {
+	KeyName     string  `json:"key_name"`
+	Locale      string  `json:"locale"`
+	Version     int     `json:"version"`
+	Text        string  `json:"text"`
+	Description *string `json:"description,omitempty"`
+	UpdatedBy   string  `json:"updated_by,omitempty"`
+	IsActive    *bool   `json:"is_active,omitempty"`
 }

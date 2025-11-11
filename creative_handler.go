@@ -6,29 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 )
 
-// локальный ответ (чтобы не лезть в types.go)
-type creativeResponse struct {
-	Kind    string       `json:"kind"`
-	Lang    string       `json:"lang"`
-	Source  string       `json:"source"`
-	Graphic *GraphicPlan `json:"graphic,omitempty"`
-
-	// Для текстовых креативов (все типы сразу)
-	Keywords  []string  `json:"keywords,omitempty"`
-	Negatives []string  `json:"negatives,omitempty"`
-	Ads       []AdBlock `json:"ads,omitempty"`
-}
-
-func creativeHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) creativeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "use POST", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// читаем JSON
 	var req CreativeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad JSON: "+err.Error(), http.StatusBadRequest)
@@ -36,102 +21,92 @@ func creativeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = r.Body.Close()
 
-	// значения по умолчанию
-	req.Kind = strings.TrimSpace(req.Kind)
-	if req.Kind == "" {
-		req.Kind = "graphic"
-	}
-	lang := "ru"
-
-	// общий таймаут на работу с AI
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), app.Config.CreativeTimeout)
 	defer cancel()
 
-	// ▶ START API LOG
 	rawReq, _ := json.Marshal(req)
-	apiStart := time.Now()
-	apiID, _ := apiLogStart(ctx, "/creative", strings.TrimSpace(req.SiteURL), string(rawReq))
+	entry := app.beginAPILog(ctx, "/creative", strings.TrimSpace(req.SiteURL), string(rawReq))
 
-	// готовим ответ-заготовку
-	resp := creativeResponse{
-		Kind:   req.Kind,
-		Lang:   lang,
+	result, errObj := app.executeCreative(ctx, req)
+	if errObj != nil {
+		logRouteError("/creative", errObj)
+		http.Error(w, errObj.ClientResponse(), errObj.Status)
+		entry.Finish(errObj.Status, errObj.RawBody, errObj.LogMessage)
+		return
+	}
+
+	rawResp, err := json.Marshal(result)
+	if err != nil {
+		logError("creative encode response failed", map[string]interface{}{"error": err.Error()})
+		http.Error(w, "encode error", http.StatusInternalServerError)
+		entry.Finish(http.StatusInternalServerError, "", "encode error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(rawResp)
+	entry.Finish(http.StatusOK, string(rawResp), "")
+}
+
+func (app *App) executeCreative(ctx context.Context, req CreativeRequest) (*CreativeResponse, *httpError) {
+	kindOriginal := strings.TrimSpace(req.Kind)
+	if kindOriginal == "" {
+		kindOriginal = "graphic"
+	}
+	kind := strings.ToLower(kindOriginal)
+
+	resp := &CreativeResponse{
+		Kind:   kindOriginal,
+		Lang:   "ru",
 		Source: "ai",
 	}
 
-	// если глобально выключен AI — сразу 503 (поведение как в твоей версии)
-	if !useAI {
-		resp.Source = "ai_error"
-		http.Error(w, "AI disabled", http.StatusServiceUnavailable)
-		apiLogFinish(ctx, apiID, http.StatusServiceUnavailable, "", "ai disabled", time.Since(apiStart))
-		return
-	}
-
-	// соберём siteText: приоритет у site_text; если его нет — попробуем подтянуть по URL
-	siteText := sanitizeSiteText(req.SiteText, 10000)
-	if siteText == "" && strings.TrimSpace(req.SiteURL) != "" {
-		// тянем HTML и извлекаем видимый текст штатными функциями fetch.go
-		html, err := fetchHTML(ctx, req.SiteURL)
+	siteText := sanitizeSiteText(req.SiteText, app.Config.CreativeSiteTextMax)
+	siteURL := strings.TrimSpace(req.SiteURL)
+	if siteText == "" && siteURL != "" {
+		html, err := fetchHTML(ctx, siteURL, app.Config.HTTPClient)
 		if err != nil {
-			http.Error(w, "fetch error: "+err.Error(), http.StatusBadGateway)
-			apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "fetch error: "+err.Error(), time.Since(apiStart))
-			return
+			msg := "fetch error: " + err.Error()
+			return nil, newHTTPError(http.StatusBadGateway, msg, msg, err)
 		}
-		siteText = extractVisibleText(html)
-		siteText = sanitizeSiteText(siteText, 10000)
+		siteText = sanitizeSiteText(extractVisibleText(html), app.Config.CreativeSiteTextMax)
 	}
 
 	if siteText == "" {
-		http.Error(w, "site_text is required", http.StatusBadRequest)
-		apiLogFinish(ctx, apiID, http.StatusBadRequest, "", "site_text is required", time.Since(apiStart))
-		return
+		return nil, newHTTPError(http.StatusBadRequest, "site_text is required", "site_text is required", nil)
 	}
 
-	switch strings.ToLower(req.Kind) {
-
+	switch kind {
 	case "text":
-		// генерируем все типы текстовых креативов сразу
-		textCreatives, err := generateAllTextCreatives(ctx, siteText)
+		textCreatives, err := app.generateAllTextCreatives(ctx, siteText)
 		if err != nil {
-			resp.Source = "ai_error"
-			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
-			apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "ai error: "+err.Error(), time.Since(apiStart))
-			return
+			msg := "ai error: " + err.Error()
+			return nil, newHTTPError(http.StatusBadGateway, "AI error: "+err.Error(), msg, err)
 		}
 		resp.Keywords = textCreatives.Keywords
 		resp.Negatives = textCreatives.Negatives
 		resp.Ads = textCreatives.Ads
 
 	case "graphic":
-		// собираем опции для графики из тела запроса
 		opts := GraphicInputOpts{
-			Goal:             req.Goal,
-			Audience:         req.Audience,
-			Geo:              req.Geo,
-			OfferConstraints: req.OfferConstraints,
-			BrandOverrides:   req.BrandOverrides,
+			Goal:             strings.TrimSpace(req.Goal),
+			Audience:         strings.TrimSpace(req.Audience),
+			Geo:              strings.TrimSpace(req.Geo),
+			OfferConstraints: strings.TrimSpace(req.OfferConstraints),
+			BrandOverrides:   strings.TrimSpace(req.BrandOverrides),
 		}
-
-		gp, err := generateGraphic(ctx, req.SiteURL, siteText, opts)
+		gp, err := app.generateGraphic(ctx, siteURL, siteText, opts)
 		if err != nil {
-			resp.Source = "ai_error"
-			http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
-			apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "ai error: "+err.Error(), time.Since(apiStart))
-			return
+			msg := "ai error: " + err.Error()
+			return nil, newHTTPError(http.StatusBadGateway, "AI error: "+err.Error(), msg, err)
 		}
 		resp.Graphic = gp
 
 	default:
-		http.Error(w, "kind must be: text | graphic", http.StatusBadRequest)
-		apiLogFinish(ctx, apiID, http.StatusBadRequest, "", "bad kind", time.Since(apiStart))
-		return
+		return nil, newHTTPError(http.StatusBadRequest, "kind must be: text | graphic", "bad kind", nil)
 	}
 
-	// ▶ FINISH API LOG (200 + тело ответа)
-	rawResp, _ := json.Marshal(resp)
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_, _ = w.Write(rawResp)
-	apiLogFinish(ctx, apiID, http.StatusOK, string(rawResp), "", time.Since(apiStart))
+	return resp, nil
 }
 
 // --- утилита очистки текста (мягкая версия) ---

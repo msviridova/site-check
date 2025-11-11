@@ -7,12 +7,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/openai/openai-go/v2"
 )
 
-func classifyHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) classifyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "use POST", http.StatusMethodNotAllowed)
 		return
@@ -35,90 +34,90 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), app.Config.ClassifyTimeout)
 	defer cancel()
 
-	// API log
 	rawReq, _ := json.Marshal(req)
-	apiStart := time.Now()
-	apiID, _ := apiLogStart(ctx, "/classify", u.String(), string(rawReq))
+	entry := app.beginAPILog(ctx, "/classify", u.String(), string(rawReq))
 
-	// ── 1) HTML сайта
-	html, err := fetchHTML(ctx, u.String())
-	if err != nil {
-		http.Error(w, "fetch failed: "+err.Error(), http.StatusBadGateway)
-		apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "fetch failed: "+err.Error(), time.Since(apiStart))
+	result, errObj := app.executeClassify(ctx, u)
+	if errObj != nil {
+		logRouteError("/classify", errObj)
+		http.Error(w, errObj.ClientResponse(), errObj.Status)
+		entry.Finish(errObj.Status, errObj.RawBody, errObj.LogMessage)
 		return
 	}
 
-	// ── 2) Эвристики
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(result.Response); err != nil {
+		logError("classify encode response failed", map[string]interface{}{"error": err.Error()})
+		http.Error(w, "encode error", http.StatusInternalServerError)
+		entry.Finish(http.StatusInternalServerError, "", "encode error")
+		return
+	}
+	entry.Finish(http.StatusOK, result.RawAI, "")
+}
+
+type classifyResult struct {
+	Response classifyResponse
+	RawAI    string
+}
+
+func (app *App) executeClassify(ctx context.Context, u *url.URL) (*classifyResult, *httpError) {
+	html, err := fetchHTML(ctx, u.String(), app.Config.HTTPClient)
+	if err != nil {
+		msg := "fetch failed: " + err.Error()
+		return nil, newHTTPError(http.StatusBadGateway, msg, msg, err)
+	}
+
 	brandHeur := extractBrand(u, html)
 	extractedColors := extractColorsHex(html)
 	styleHeur := deriveStyleNotes(extractedColors, html)
 
-	// ── 3) Подготовка текста для промпта
 	siteText := extractVisibleText(html)
-	if len(siteText) > 12000 {
-		siteText = siteText[:12000]
+	if limit := app.Config.ClassifySiteTextMax; limit > 0 && len(siteText) > limit {
+		siteText = siteText[:limit]
+	}
+	siteText = strings.TrimSpace(siteText)
+
+	if app.Store == nil {
+		return nil, newHTTPError(http.StatusInternalServerError, "store not initialized", "store not initialized", nil)
 	}
 
-	// ── 4) Промпт из БД (без фолбэка)
 	const promptKey = "classify"
-	p, err := getPrompt(db, promptKey, "ru", 0)
+	p, err := app.Store.GetPrompt(promptKey, "ru", 0)
 	if err != nil {
-		http.Error(w, "prompt not found: "+promptKey, http.StatusInternalServerError)
-		apiLogFinish(ctx, apiID, http.StatusInternalServerError, "", "no prompt in DB", time.Since(apiStart))
-		return
+		return nil, newHTTPError(http.StatusInternalServerError, "prompt not found: "+promptKey, "no prompt in DB", err)
 	}
 	prompt := strings.TrimSpace(p.Text)
 	if prompt == "" {
-		http.Error(w, "prompt is empty: "+promptKey, http.StatusInternalServerError)
-		apiLogFinish(ctx, apiID, http.StatusInternalServerError, "", "empty prompt text", time.Since(apiStart))
-		return
+		return nil, newHTTPError(http.StatusInternalServerError, "prompt is empty: "+promptKey, "empty prompt text", nil)
 	}
 
-	// ── 5) Подстановка плейсхолдеров
-	if styleHeur == "" {
-		styleHeur = "неопределено"
+	colorsValue := "[]"
+	if len(extractedColors) > 0 {
+		colorsValue = strings.Join(extractedColors, ", ")
 	}
-	prompt = strings.ReplaceAll(prompt, "{HEUR_BRAND}", brandHeur)
-	prompt = strings.ReplaceAll(prompt, "{HEUR_STYLE}", styleHeur)
-	if len(extractedColors) == 0 {
-		prompt = strings.ReplaceAll(prompt, "{HEUR_COLORS}", "[]")
-	} else {
-		prompt = strings.ReplaceAll(prompt, "{HEUR_COLORS}", strings.Join(extractedColors, ", "))
-	}
-	prompt = strings.ReplaceAll(prompt, "{SITE_TEXT}", siteText)
 
-	// ── 6) Вызов AI
-	startAI := time.Now()
-	aiID, _ := aiLogStart(ctx, nil, modelName, preview512(prompt))
+	prompt = applyPlaceholders(prompt, map[string]string{
+		"{HEUR_BRAND}":  brandHeur,
+		"{HEUR_STYLE}":  styleHeur,
+		"{HEUR_COLORS}": colorsValue,
+		"{SITE_TEXT}":   siteText,
+	})
 
-	respAI, err := aiClient.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: modelName,
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(prompt),
-		},
+	rawAI, _, err := app.callChatCompletion(ctx, prompt, AIRequestOptions{
 		MaxTokens:   openai.Int(900),
 		Temperature: openai.Float(0.3),
 	})
 	if err != nil {
-		aiLogFinish(ctx, aiID, "", err.Error(), nil, time.Since(startAI))
-		http.Error(w, "AI error: "+err.Error(), http.StatusBadGateway)
-		apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "ai error", time.Since(apiStart))
-		return
-	}
-	if len(respAI.Choices) == 0 {
-		aiLogFinish(ctx, aiID, "", "no choices from AI", nil, time.Since(startAI))
-		http.Error(w, "AI: no choices", http.StatusBadGateway)
-		apiLogFinish(ctx, apiID, http.StatusBadGateway, "", "AI: no choices", time.Since(apiStart))
-		return
+		errMsg := err.Error()
+		if errMsg == "no choices from AI" {
+			return nil, newHTTPError(http.StatusBadGateway, "AI: no choices", "AI: no choices", err)
+		}
+		return nil, newHTTPError(http.StatusBadGateway, "AI error: "+errMsg, "ai error: "+errMsg, err)
 	}
 
-	rawJSON := strings.TrimSpace(respAI.Choices[0].Message.Content)
-	aiLogFinish(ctx, aiID, rawJSON, "", nil, time.Since(startAI))
-
-	// ── 7) Разбор ответа AI → твоя целевая структура
 	type aiOut struct {
 		Summary             string   `json:"summary"`
 		Brand               string   `json:"brand"`
@@ -129,29 +128,12 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 		AccentPrimaryHex    string   `json:"accent_primary_hex"`
 		AccentSecondaryHex  string   `json:"accent_secondary_hex"`
 	}
-	var out aiOut
-	if err := json.Unmarshal([]byte(rawJSON), &out); err != nil {
-		http.Error(w, "AI JSON parse error: "+err.Error(), http.StatusBadGateway)
-		apiLogFinish(ctx, apiID, http.StatusBadGateway, rawJSON, "ai json parse error", time.Since(apiStart))
-		return
-	}
 
-	// ── 8) Чистка/дедуп
-	uniq := func(xs []string) []string {
-		m := make(map[string]struct{}, len(xs))
-		out := make([]string, 0, len(xs))
-		for _, v := range xs {
-			v = strings.TrimSpace(v)
-			if v == "" {
-				continue
-			}
-			if _, ok := m[v]; ok {
-				continue
-			}
-			m[v] = struct{}{}
-			out = append(out, v)
-		}
-		return out
+	var out aiOut
+	if err := json.Unmarshal([]byte(rawAI), &out); err != nil {
+		httpErr := newHTTPError(http.StatusBadGateway, "AI JSON parse error: "+err.Error(), "ai json parse error", err)
+		httpErr.RawBody = rawAI
+		return nil, httpErr
 	}
 
 	finalBrand := strings.TrimSpace(out.Brand)
@@ -169,20 +151,18 @@ func classifyHandler(w http.ResponseWriter, r *http.Request) {
 		Source:              "ai",
 		Brand:               finalBrand,
 		StyleNotes:          finalStyle,
-		MainColorsHex:       uniq(out.MainColorsHex),
-		AdditionalColorsHex: uniq(out.AdditionalColorsHex),
+		MainColorsHex:       dedup(out.MainColorsHex),
+		AdditionalColorsHex: dedup(out.AdditionalColorsHex),
 		BackgroundColorHex:  strings.TrimSpace(out.BackgroundColorHex),
 		AccentPrimaryHex:    strings.TrimSpace(out.AccentPrimaryHex),
 		AccentSecondaryHex:  strings.TrimSpace(out.AccentSecondaryHex),
 	}
 	if len(resp.MainColorsHex) == 0 {
-		resp.MainColorsHex = extractedColors // подстрахуемся палитрой из HTML
+		resp.MainColorsHex = extractedColors
 	}
 	if resp.Summary == "" {
 		resp.Summary = "Описание сайта недоступно."
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(resp)
-	apiLogFinish(ctx, apiID, http.StatusOK, rawJSON, "", time.Since(apiStart))
+	return &classifyResult{Response: resp, RawAI: rawAI}, nil
 }

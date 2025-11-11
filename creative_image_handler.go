@@ -1,35 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"image"
-	"image/png"
-	"io"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
-	"time"
 
-	"golang.org/x/image/draw"
+	"github.com/openai/openai-go/v2"
 )
 
 // ---------- DTO ----------
 
-type imageRequest struct {
-	Prompt         string `json:"prompt"`                    // обязательно
-	Size           string `json:"size,omitempty"`            // "1:1" | "3:2" | "2:3" | "1024x1024" | ...
-	ResponseFormat string `json:"response_format,omitempty"` // игнорируем, всегда приведём к URL
-	AutoOpen       bool   `json:"auto_open,omitempty"`       // если true — сразу открыть в браузере
-}
+type ImageConcept map[string]any
 
 type imageResponse struct {
 	URL  string `json:"url"`            // /static/…png
@@ -56,7 +38,7 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 
 // ---------- handler ----------
 
-func imageHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) imageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSONError(w, http.StatusMethodNotAllowed, "use POST")
@@ -67,165 +49,142 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var in imageRequest
+	var in ImageTemplate
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad JSON: "+err.Error())
 		return
 	}
 	_ = r.Body.Close()
 
-	in.Prompt = strings.TrimSpace(in.Prompt)
-	if in.Prompt == "" {
-		writeJSONError(w, http.StatusBadRequest, "prompt is required")
-		return
-	}
-	size := strings.TrimSpace(in.Size)
-
-	// 1) генерируем (по твоей функции)
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second) // увеличим, чтобы избежать таймаутов
+	ctx, cancel := context.WithTimeout(r.Context(), app.Config.AITimeout)
 	defer cancel()
 
-	// формат ответа от провайдера нам без разницы — мы всё равно сохраним локально
-	result, err := generateImage(ctx, in.Prompt, size, "url")
-	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "AI error: "+err.Error())
+	rawReq, _ := json.Marshal(in)
+	entry := app.beginAPILog(ctx, "/image", "", string(rawReq))
+
+	result, errObj := app.executeImage(ctx, in)
+	if errObj != nil {
+		logRouteError("/image", errObj)
+		writeJSONError(w, errObj.Status, errObj.ClientMessage)
+		entry.Finish(errObj.Status, errObj.RawBody, errObj.LogMessage)
 		return
 	}
 
-	// 2) сохраняем в ./static и получаем короткий URL
-	// ВРЕМЕННО ОТКЛЮЧЕНО: сохранение на диск из-за проблем с правами доступа
-	// publicURL, err := materializeImageToStatic(r.Context(), result)
-	// if err != nil {
-	// 	writeJSONError(w, http.StatusBadGateway, "save image: "+err.Error())
-	// 	return
-	// }
-	
-	// Используем оригинальный URL от OpenAI вместо локального сохранения
-	publicURL := result
+	writeJSON(w, http.StatusOK, result.Response)
+	entry.Finish(http.StatusOK, result.RawAI, "")
+}
 
-	// 3) опционально открываем в браузере на машине, где крутится сервер
-	if in.AutoOpen {
-		_ = openInBrowser("http://" + r.Host + publicURL) // best-effort; ошибки не фатальны
+type imageResult struct {
+	Response imageResponse
+	RawAI    string
+}
+
+type imagePromptPlan struct {
+	Prompt    string `json:"prompt"`
+	Negatives string `json:"negatives"`
+}
+
+func (app *App) executeImage(ctx context.Context, in ImageTemplate) (*imageResult, *httpError) {
+	conceptStr := strings.TrimSpace(string(in.Concept))
+	if conceptStr == "" {
+		return nil, newHTTPError(http.StatusBadRequest, "field 'concept' is required", "concept missing", nil)
+	}
+	if !json.Valid(in.Concept) {
+		return nil, newHTTPError(http.StatusBadRequest, "field 'concept' must be valid JSON", "concept invalid json", nil)
+	}
+	if limit := app.Config.ImageConceptMaxBytes; limit > 0 && len(conceptStr) > limit {
+		return nil, newHTTPError(http.StatusBadRequest, "field 'concept' is too long", "concept too long", nil)
 	}
 
-	// 4) отдаём короткий URL
-	writeJSON(w, http.StatusOK, imageResponse{
-		URL:  publicURL,
-		Size: size,
+	additional := strings.TrimSpace(in.Additional)
+	if limit := app.Config.ImageAdditionalMaxBytes; limit > 0 && len(additional) > limit {
+		return nil, newHTTPError(http.StatusBadRequest, "field 'additional' is too long", "additional too long", nil)
+	}
+	if additional == "" {
+		additional = DefaultImageAdditional
+	}
+
+	if app.Store == nil {
+		return nil, newHTTPError(http.StatusInternalServerError, "store not initialized", "store not initialized", nil)
+	}
+
+	promptTemplate, err := app.getPromptCached("image", "ru", 0)
+	if err != nil {
+		return nil, newHTTPError(http.StatusInternalServerError, "prompt not found: image", "no prompt in DB", err)
+	}
+
+	payload := applyPlaceholders(promptTemplate.Text, map[string]string{
+		"{CONCEPT}":    conceptStr,
+		"{ADDITIONAL}": additional,
 	})
-}
 
-// ---------- saving helpers ----------
+	logInfo("image payload", map[string]interface{}{"payload": payload})
 
-// materializeImageToStatic принимает либо https-URL, либо data:image/png;base64,…
-func materializeImageToStatic(ctx context.Context, src string) (string, error) {
-	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
-		return downloadToStatic(ctx, src)
-	}
-	if strings.HasPrefix(src, "data:image/png;base64,") {
-		return dataURLToStatic(src)
-	}
-	return "", errors.New("unsupported image source format")
-}
-
-func staticDir() string {
-	return "static"
-}
-
-func ensureStaticDir() error {
-	return os.MkdirAll(staticDir(), 0o755)
-}
-
-func newImageName(suffix string, seed []byte) string {
-	sum := sha256.Sum256(seed)
-	return fmt.Sprintf("img_%d_%x%s", time.Now().Unix(), sum[:4], suffix)
-}
-
-func dataURLToStatic(dataURL string) (string, error) {
-	const prefix = "data:image/png;base64,"
-	b64 := strings.TrimPrefix(strings.TrimSpace(dataURL), prefix)
-	return rawBase64PNGToStatic(b64)
-}
-
-func rawBase64PNGToStatic(b64 string) (string, error) {
-	if err := ensureStaticDir(); err != nil {
-		return "", err
-	}
-	raw, err := base64.StdEncoding.DecodeString(b64)
+	raw, _, err := app.callChatCompletion(ctx, payload, AIRequestOptions{
+		MaxTokens:   openai.Int(600),
+		Temperature: openai.Float(0.2),
+	})
 	if err != nil {
-		return "", err
+		errMsg := err.Error()
+		if errMsg == "no choices from AI" {
+			return nil, newHTTPError(http.StatusBadGateway, "AI: no choices", "AI: no choices", err)
+		}
+		return nil, newHTTPError(http.StatusBadGateway, "AI error: "+errMsg, "ai error: "+errMsg, err)
 	}
-	name := newImageName(".png", []byte(b64[:min(64, len(b64))]))
-	path := filepath.Join(staticDir(), name)
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		return "", err
+
+	var plan imagePromptPlan
+	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+		trimmed := extractJSONBlock(raw)
+		if trimmed == "" || json.Unmarshal([]byte(trimmed), &plan) != nil {
+			logWarn("image ai json parse failed", map[string]interface{}{"raw": raw, "error": err.Error()})
+			httpErr := newHTTPError(http.StatusBadGateway, "AI JSON parse error: "+err.Error(), "ai json parse error", err)
+			httpErr.RawBody = raw
+			return nil, httpErr
+		}
+		raw = trimmed
 	}
-	return "/static/" + name, nil
+
+	finalPrompt := strings.TrimSpace(plan.Prompt)
+	if finalPrompt == "" {
+		return nil, newHTTPError(http.StatusBadGateway, "AI prompt is empty", "empty ai prompt", nil)
+	}
+	if plan.Negatives != "" {
+		finalPrompt += ". Negative prompts: " + plan.Negatives
+	}
+	if additional != "" {
+		finalPrompt += ". Restrictions: " + additional
+	}
+
+	size := strings.TrimSpace(in.Size)
+
+	resultURL, err := app.generateImage(ctx, finalPrompt, size, "url")
+	if err != nil {
+		return nil, newHTTPError(http.StatusBadGateway, "AI error: "+err.Error(), "image generation failed", err)
+	}
+
+	return &imageResult{
+		Response: imageResponse{URL: resultURL, Size: size},
+		RawAI:    raw,
+	}, nil
 }
 
-func downloadToStatic(ctx context.Context, url string) (string, error) {
-	if err := ensureStaticDir(); err != nil {
-		return "", err
+func extractJSONBlock(raw string) string {
+	start := strings.Index(raw, "{")
+	if start == -1 {
+		return ""
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	res, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return "", fmt.Errorf("download http %s", res.Status)
-	}
-	data, err := io.ReadAll(res.Body)
-	if err != nil {
-		return "", err
-	}
-
-	// имя
-	name := newImageName(".png", data[:min(64, len(data))])
-	path := filepath.Join(staticDir(), name)
-
-	// сохраняем «полный» PNG
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return "", err
-	}
-
-	// --- делаем thumbnail 512x512 ---
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err == nil {
-		thumb := image.NewRGBA(image.Rect(0, 0, 512, 512))
-		draw.CatmullRom.Scale(thumb, thumb.Bounds(), img, img.Bounds(), draw.Over, nil)
-		buf := new(bytes.Buffer)
-		if err := png.Encode(buf, thumb); err == nil {
-			_ = os.WriteFile(filepath.Join(staticDir(), strings.TrimSuffix(name, ".png")+"_thumb.png"), buf.Bytes(), 0o644)
+	// искать закрывающую скобку, учитывая вложенность
+	depth := 0
+	for i := start; i < len(raw); i++ {
+		switch raw[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return raw[start : i+1]
+			}
 		}
 	}
-
-	return "/static/" + name, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// ---------- open in browser (best-effort) ----------
-
-func openInBrowser(url string) error {
-	switch runtime.GOOS {
-	case "darwin":
-		return exec.Command("open", url).Start()
-	case "linux":
-		return exec.Command("xdg-open", url).Start()
-	case "windows":
-		// start открывается через cmd
-		return exec.Command("cmd", "/c", "start", url).Start()
-	default:
-		return nil
-	}
+	return ""
 }

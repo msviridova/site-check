@@ -15,31 +15,22 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-var fetchClient *http.Client
-
-func init() {
-	jar, _ := cookiejar.New(nil)
-	transport := &http.Transport{
-		// иногда помогает отключить http/2 ALPN, но попробуй сначала так
-		// ForceAttemptHTTP2: false,
-		// Proxy/ДНС/таймауты можно тут настраивать при необходимости
+func fetchHTML(ctx context.Context, url string, client *http.Client) (string, error) {
+	if client == nil {
+		// fallback: создаем клиент по умолчанию
+		jar, _ := cookiejar.New(nil)
+		client = &http.Client{
+			Jar:     jar,
+			Timeout: 15 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return errors.New("too many redirects")
+				}
+				req.Header.Set("User-Agent", via[0].Header.Get("User-Agent"))
+				return nil
+			},
+		}
 	}
-	fetchClient = &http.Client{
-		Transport: transport,
-		Jar:       jar,
-		Timeout:   15 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("too many redirects")
-			}
-			// копим UA при редиректах
-			req.Header.Set("User-Agent", via[0].Header.Get("User-Agent"))
-			return nil
-		},
-	}
-}
-
-func fetchHTML(ctx context.Context, url string) (string, error) {
 	// 1) пробуем «как браузер»
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36")
@@ -48,7 +39,7 @@ func fetchHTML(ctx context.Context, url string) (string, error) {
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Cache-Control", "no-cache")
 
-	res, err := fetchClient.Do(req)
+	res, err := client.Do(req)
 	if err == nil && res != nil {
 		defer res.Body.Close()
 		if res.StatusCode >= 200 && res.StatusCode < 300 {
@@ -75,7 +66,7 @@ func fetchHTML(ctx context.Context, url string) (string, error) {
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, fb, nil)
 	req2.Header.Set("User-Agent", "curl/8.0")
 	req2.Header.Set("Accept", "text/plain")
-	res2, err2 := fetchClient.Do(req2)
+	res2, err2 := client.Do(req2)
 	if err2 != nil {
 		return "", fmt.Errorf("fetch failed: %v", err2)
 	}

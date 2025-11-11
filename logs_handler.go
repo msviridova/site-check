@@ -6,11 +6,16 @@ import (
 	"net/http"
 )
 
-func logsHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) logsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	api, _ := getRecentAPILogs(ctx)
-	ai, _ := getRecentAILogs(ctx)
+	if app.Store == nil {
+		http.Error(w, "store not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	api, _ := app.Store.GetRecentAPILogs(ctx)
+	ai, _ := app.Store.GetRecentAILogs(ctx)
 
 	// гарантируем пустые массивы (а не null)
 	if api == nil {
